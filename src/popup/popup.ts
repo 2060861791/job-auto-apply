@@ -1,10 +1,9 @@
 /**
  * BOSS自动投递 - Popup (精简版)
- * 只负责：开始/停止按钮 + 简单状态显示
- * 详细信息在页面右侧浮动面板查看
+ * 打开时主动查询运行状态，保持 UI 与实际同步
  */
 
-import { type StatusMessage } from '../shared/types';
+import { AutomationState, type StatusMessage } from '../shared/types';
 
 const go = document.getElementById('go') as HTMLButtonElement;
 const sp = document.getElementById('sp') as HTMLButtonElement;
@@ -12,6 +11,14 @@ const st = document.getElementById('st') as HTMLSpanElement;
 const ct = document.getElementById('ct') as HTMLSpanElement;
 
 let running = false;
+
+// === 打开时查询当前状态 ===
+(async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'COMMAND', command: 'GET_STATUS' });
+  } catch { /* ignore */ }
+})();
 
 go.addEventListener('click', async () => {
   await sendCmd('START');
@@ -21,18 +28,15 @@ go.addEventListener('click', async () => {
 
 sp.addEventListener('click', async () => {
   await sendCmd('STOP');
-  setRun(false);
-  st.textContent = '已停止';
 });
 
+// 监听状态更新
 chrome.runtime.onMessage.addListener((msg: StatusMessage) => {
-  if (msg.type === 'STATUS') {
-    st.textContent = msg.state;
-    ct.textContent = String(msg.processedCount);
-    if (msg.state === 'STOPPED' || msg.state === 'NO_MORE_JOBS' || msg.state === 'IDLE') {
-      setRun(false);
-    }
-  }
+  if (msg.type !== 'STATUS') return;
+  st.textContent = msg.state;
+  ct.textContent = String(msg.processedCount);
+  const idle = [AutomationState.IDLE, AutomationState.STOPPED, AutomationState.NO_MORE_JOBS].includes(msg.state);
+  setRun(!idle);
 });
 
 async function sendCmd(cmd: 'START' | 'STOP'): Promise<void> {

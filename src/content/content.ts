@@ -259,13 +259,22 @@ function refreshPanel(): void {
 }
 
 function navPanel(delta: number): void {
-  if (jobItems.length === 0) { refreshPanel(); return; }
+  if (jobItems.length === 0) { out('⚠ 未检测到职位，请先滚动列表加载'); refreshPanel(); return; }
   const ni = curIdx + delta;
-  if (ni < 0 || ni >= jobItems.length) return;
+  if (ni < 0) { out('⚠ 已是第一个职位'); return; }
+  if (ni >= jobItems.length) { out('⚠ 已是最后一个职位，如需更多请手动滚动加载'); return; }
   curIdx = ni;
-  hlCard(curIdx);
+  // 清除所有高亮
+  jobItems.forEach(e => { e.style.outline = ''; e.style.boxShadow = ''; });
+  // 高亮新目标
+  const card = jobItems[curIdx];
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.style.outline = '3px solid #f5c2e7';
+  card.style.boxShadow = '0 0 20px 4px rgba(245,194,231,0.5)';
   setText('__idx__', String(curIdx + 1));
-  refreshPanel();
+  out(`📍 [${curIdx + 1}/${jobItems.length}] <b>${esc(txt(card, 'a.job-name'))}</b>\n${esc(txt(card, 'span.boss-name'))} | ${esc(txt(card, 'span.company-location'))}`);
+  // 异步刷新列表视图
+  setTimeout(refreshPanel, 150);
 }
 
 function hlCard(idx: number): void {
