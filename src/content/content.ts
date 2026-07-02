@@ -52,8 +52,7 @@ const subs: Sub[] = [];
 
 // 计时
 let startTime = 0;
-let firstJobMs = 0;       // 第一个职位实际耗时
-let etaTotalMs = 0;       // 预估总耗时
+let etaTotalMs = 0;       // 预估总耗时（8秒×职位数）
 let etaTimer: ReturnType<typeof setInterval> | null = null;
 
 let spd: SpeedSettings = { ...SPEED_PRESETS.recommend };
@@ -90,6 +89,8 @@ document.addEventListener('mousemove', (e) => {
 document.addEventListener('mouseup', () => { drag = false; });
 document.addEventListener('click', (e) => {
   if (!inspectOn) return;
+  // 跳过面板内的按钮点击，否则 inspect 无法关闭
+  if ((e.target as HTMLElement).closest('#_b_')) return;
   e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
   doInspect(e.target as HTMLElement);
 }, true);
@@ -301,8 +302,7 @@ function hlCard(idx: number): void {
 
 function startEtaCountdown(): void {
   stopEtaCountdown();
-  if (jobItems.length === 0 || !firstJobMs) return;
-  etaTotalMs = firstJobMs * jobItems.length;
+  if (jobItems.length === 0 || !etaTotalMs) return;
   updateEtaDisplay();
   etaTimer = setInterval(updateEtaDisplay, 1000);
 }
@@ -365,11 +365,17 @@ function preset(name: string): void {
 function start(): void {
   if (!IDLE_SET.has(currentState)) return;
   stopped = false; lastClickedJobText = ''; processedCount = 0; consecutiveErrors = 0;
-  userNav = false; firstJobMs = 0;
+  userNav = false;
   startTime = Date.now();
   stopEtaCountdown();
   setText('__badge__', '运行中');
-  setText('__eta__', '计算中...');
+  // 每个职位预估8秒 × 总数，直接启动倒计时
+  if (jobItems.length > 0) {
+    etaTotalMs = 8000 * jobItems.length;
+    startEtaCountdown();
+  } else {
+    setText('__eta__', '计算中...');
+  }
   // 切换按钮为停止
   const btn = $<HTMLButtonElement>('__toggle__');
   btn.textContent = '⏹ 停 止';
@@ -542,11 +548,6 @@ function recordSub(status: string): void {
     setText('__sent__', String(subs.length));
     setText('__cnt__', `${subs.length}/${jobItems.length}`);
 
-    // 第一次投递完成 → 以此次真实耗时作为锚点
-    if (subs.length === 1) {
-      firstJobMs = Date.now() - startTime;
-      startEtaCountdown();
-	    }
   }
 }
 
