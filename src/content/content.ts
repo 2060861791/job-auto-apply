@@ -1,7 +1,7 @@
 /**
- * BOSS自动投递 - Content Script v8.2
+ * BOSS自动投递 - Content Script v9
  *
- * 修复：导航回跳 + 中文状态 + 耗时预估 + 进度 x/总数
+ * v9: 开始/停止集成到面板 + 丝滑ETA倒计时 + 刷新按钮
  */
 
 import {
@@ -17,15 +17,16 @@ import {
 } from '../shared/types';
 
 // ============================================================
-// 中文状态映射
+// 中文状态
 // ============================================================
-const STATE_CN: Record<string, string> = {
+const SCN: Record<string, string> = {
   IDLE: '就绪', FIND_NEXT_JOB: '查找职位', HIGHLIGHT_JOB: '高亮职位', CLICK_JOB: '点击职位',
   WAIT_DETAIL: '等待详情', FIND_COMMUNICATE: '查找沟通', HIGHLIGHT_COMMUNICATE: '高亮沟通',
   CLICK_COMMUNICATE: '点击沟通', CHECK_DIALOG: '检查弹窗', HIGHLIGHT_DIALOG: '高亮弹窗',
   CLICK_DIALOG: '点击弹窗', WAIT: '等待中', STOPPED: '已停止', ERROR: '错误',
   NO_MORE_JOBS: '全部完成',
 };
+const IDLE_SET = new Set([AutomationState.IDLE, AutomationState.STOPPED, AutomationState.NO_MORE_JOBS]);
 
 // ============================================================
 // 全局
@@ -40,10 +41,7 @@ let transitionTimerId: ReturnType<typeof setTimeout> | null = null;
 let pnl: HTMLElement | null = null;
 let jobItems: HTMLElement[] = [];
 let curIdx = 0;
-let inspectOn = false;
-let cfgOpen = false;
-let folded = false;
-let userNavigated = false; // 用户手动导航后不同步 BOSS 的 active 状态
+let inspectOn = false, cfgOpen = false, folded = false, userNav = false;
 
 // 拖动
 let drag = false, dx = 0, dy = 0, px = 0, py = 0;
@@ -54,6 +52,9 @@ const subs: Sub[] = [];
 
 // 计时
 let startTime = 0;
+let firstJobMs = 0;       // 第一个职位实际耗时
+let etaTotalMs = 0;       // 预估总耗时
+let etaTimer: ReturnType<typeof setInterval> | null = null;
 
 let spd: SpeedSettings = { ...SPEED_PRESETS.recommend };
 applySpeed(spd);
@@ -83,12 +84,10 @@ chrome.runtime.onMessage.addListener((message: CommandMessage) => {
 
 document.addEventListener('mousemove', (e) => {
   if (!drag || !pnl) return;
-  const nx = Math.max(0, Math.min(px + e.clientX - dx, window.innerWidth - pnl.offsetWidth));
-  const ny = Math.max(0, Math.min(py + e.clientY - dy, window.innerHeight - 60));
-  pnl.style.left = nx + 'px'; pnl.style.top = ny + 'px';
+  pnl.style.left = Math.max(0, Math.min(px + e.clientX - dx, innerWidth - pnl.offsetWidth)) + 'px';
+  pnl.style.top = Math.max(0, Math.min(py + e.clientY - dy, innerHeight - 60)) + 'px';
 });
 document.addEventListener('mouseup', () => { drag = false; });
-
 document.addEventListener('click', (e) => {
   if (!inspectOn) return;
   e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
@@ -125,7 +124,7 @@ const CSS = `
 #_b_ ._cgp button{flex:1;padding:6px 0;border-radius:6px;border:1px solid #3a3a55;background:#22223a;color:#cdd6f4;font-size:11px;cursor:pointer;}
 #_b_ ._cgp button:hover{background:#2d2d48;}
 #_b_ ._cgp ._on{border-color:#89b4fa;color:#89b4fa;font-weight:600;}
-#_b_ ._out{flex:1;overflow-y:auto;padding:10px 14px;font-size:11px;line-height:1.6;color:#b4b8d0;min-height:60px;max-height:260px;}
+#_b_ ._out{flex:1;overflow-y:auto;padding:10px 14px;font-size:11px;line-height:1.6;color:#b4b8d0;min-height:60px;max-height:240px;}
 #_b_ ._out b{color:#e2a4f5;}
 #_b_ ._out ._d{color:#585b70;}
 #_b_ ._out ._g{color:#a6e3a1;}
@@ -133,6 +132,8 @@ const CSS = `
 #_b_ ._out ._r{color:#f38ba8;}
 #_b_ ._out::-webkit-scrollbar{width:4px;}
 #_b_ ._out::-webkit-scrollbar-thumb{background:#3a3a55;border-radius:2px;}
+._go{background:#a6e3a1!important;color:#1a1a2e!important;border-color:#a6e3a1!important;font-weight:700;font-size:14px!important;letter-spacing:2px;}
+._sp{background:#f38ba8!important;color:#1a1a2e!important;border-color:#f38ba8!important;font-weight:700;font-size:14px!important;letter-spacing:2px;}
 ._na{background:#89b4fa!important;color:#1a1a2e!important;border-color:#89b4fa!important;font-weight:600;}
 ._nn{background:#a6e3a1!important;color:#1a1a2e!important;border-color:#a6e3a1!important;font-weight:600;}
 ._nd{background:#f38ba8!important;color:#1a1a2e!important;border-color:#f38ba8!important;}
@@ -141,22 +142,27 @@ const CSS = `
 
 const HTML = `
 <div class="_h" id="__h__">
-  <span>≡</span><span class="_hh">BOSS 自动投递 v8</span>
+  <span>≡</span><span class="_hh">BOSS 自动投递 v9</span>
   <span class="_hb" id="__badge__">就绪</span>
   <button id="__cfg__" title="设置">⚙</button>
   <button id="__fold__" title="折叠">─</button>
 </div>
 <div class="_s" id="__stats__">
-  <div class="_si"><div class="_sv" style="color:#a6e3a1" id="__cnt__">-</div><div class="_sl">进度</div></div>
+  <div class="_si"><div class="_sv" style="color:#a6e3a1" id="__cnt__">-/ -</div><div class="_sl">进度</div></div>
   <div class="_si"><div class="_sv" style="color:#f5c2e7" id="__sent__">0</div><div class="_sl">已投</div></div>
   <div class="_si"><div class="_sv" style="color:#89b4fa" id="__eta__">-</div><div class="_sl">预计剩余</div></div>
   <div class="_si"><div class="_sv" style="color:#f38ba8;font-size:11px" id="__st__">就绪</div><div class="_sl">状态</div></div>
 </div>
-<div class="_bt" id="__nav__">
-  <button class="_na" id="__prev__" style="flex:.7;font-size:16px;">◀</button>
-  <button class="_nn" id="__next__" style="flex:.7;font-size:16px;">▶</button>
+<div class="_bt">
+  <button class="_go" id="__start__">▶ 开 始</button>
+  <button class="_sp" id="__stop__">⏹ 停 止</button>
+</div>
+<div class="_bt">
+  <button class="_na" id="__prev__" style="flex:.6;font-size:16px;">◀</button>
+  <button class="_nn" id="__next__" style="flex:.6;font-size:16px;">▶</button>
   <button id="__insp__">🎯 OFF</button>
-  <button class="_nx" id="__export__">📥 导出</button>
+  <button id="__refresh__">🔄 刷新</button>
+  <button class="_nx" id="__export__">📥</button>
 </div>
 <div class="_cfg" id="__cfgpnl__">
   <div class="_cgt">⚙ 速度设置 (<span id="__spdlbl__">推荐</span>)</div>
@@ -180,8 +186,7 @@ function buildPanel(): void {
   document.body.appendChild(el);
   pnl = el;
 
-  const hdr = $('__h__');
-  hdr.addEventListener('mousedown', (e) => {
+  $('__h__').addEventListener('mousedown', (e) => {
     const me = e as MouseEvent;
     if ((me.target as HTMLElement).tagName === 'BUTTON') return;
     drag = true; dx = me.clientX; dy = me.clientY;
@@ -189,20 +194,25 @@ function buildPanel(): void {
     px = r.left; py = r.top; pnl!.style.transition = 'none';
   });
 
-  click('__prev__', () => { userNavigated = true; navPanel(-1); });
-  click('__next__', () => { userNavigated = true; navPanel(1); });
+  click('__start__', start);
+  click('__stop__', stop);
+  click('__prev__', () => { userNav = true; navPanel(-1); });
+  click('__next__', () => { userNav = true; navPanel(1); });
+  click('__refresh__', () => { out('🔄 刷新中...'); setTimeout(refreshPanel, 200); });
   click('__insp__', () => {
     inspectOn = !inspectOn;
     const b = $<HTMLButtonElement>('__insp__');
     b.textContent = inspectOn ? '🎯 ON' : '🎯 OFF';
     b.className = inspectOn ? '_nd' : '';
-    if (inspectOn) out('✅ 点击检测 ON — 点击页面元素查看DOM');
+    if (inspectOn) out('✅ 点击检测 ON');
   });
   click('__export__', doExport);
   click('__cfg__', () => { cfgOpen = !cfgOpen; $('__cfgpnl__').classList.toggle('on', cfgOpen); });
   click('__fold__', () => {
     folded = !folded;
-    ['__stats__','__nav__','__cfgpnl__','__out__'].forEach(id => { $(id).style.display = folded ? 'none' : ''; });
+    ['__stats__','__nav__','__ctrl__','__cfgpnl__','__out__'].forEach(id => {
+      const el2 = document.getElementById(id); if (el2) el2.style.display = folded ? 'none' : '';
+    });
     $<HTMLButtonElement>('__fold__').textContent = folded ? '□' : '─';
   });
 
@@ -219,36 +229,23 @@ function buildPanel(): void {
 }
 
 // ============================================================
-// 刷新面板
+// 面板刷新
 // ============================================================
 
 function refreshPanel(): void {
   jobItems = getJobCards();
   const ai = findActiveIdx(jobItems);
-
-  // 只在非用户手动导航时同步 BOSS 的 active 状态
-  if (!userNavigated && ai >= 0) curIdx = ai;
+  if (!userNav && ai >= 0) curIdx = ai;
 
   const total = jobItems.length;
   const done = subs.length;
-  const remain = total - done;
 
   setText('__cnt__', `${done}/${total}`);
   setText('__sent__', String(done));
-  setText('__st__', STATE_CN[currentState] || currentState);
-
-  // 计算 ETA
-  if (startTime > 0 && done > 0) {
-    const elapsed = Date.now() - startTime;
-    const avg = elapsed / done;
-    const etaMs = avg * remain;
-    setText('__eta__', formatDuration(etaMs));
-  } else {
-    setText('__eta__', '-');
-  }
+  setText('__st__', SCN[currentState] || currentState);
 
   const L: string[] = [];
-  L.push(`📋 <b>${total}</b> 个职位 | 已投 <b class="_r">${done}</b> | 剩余 <b>${remain}</b> | ${STATE_CN[currentState] || currentState}`);
+  L.push(`📋 <b>${total}</b> 个职位 | 已投 <b class="_r">${done}</b> | 剩余 <b>${Math.max(0, total - done)}</b> | ${SCN[currentState] || currentState}`);
   L.push('');
 
   if (total > 0) {
@@ -265,7 +262,7 @@ function refreshPanel(): void {
       ].filter(Boolean).join('');
       L.push(`  ${icons} [${i}] <b>${esc(title)}</b> | ${esc(comp)} <span class="_d">${esc(tags)}</span>`);
     });
-    if (!userNavigated || curIdx < total) hlCard(curIdx);
+    if (!userNav || curIdx < total) hlCard(curIdx);
   } else {
     L.push('⚠ 未检测到职位');
   }
@@ -274,12 +271,10 @@ function refreshPanel(): void {
 }
 
 function navPanel(delta: number): void {
-  if (jobItems.length === 0) { out('⚠ 未检测到职位'); refreshPanel(); return; }
+  if (jobItems.length === 0) { out('⚠ 未检测到职位'); return; }
   const ni = curIdx + delta;
-  if (ni < 0) { out('⚠ 已是第一个'); return; }
-  if (ni >= jobItems.length) { out('⚠ 已是最后一个'); return; }
+  if (ni < 0 || ni >= jobItems.length) { out(`⚠ 已是第${delta > 0 ? '最后' : '一'}个`); return; }
   curIdx = ni;
-  // 立即高亮
   jobItems.forEach(e => { e.style.outline = ''; e.style.boxShadow = ''; });
   const card = jobItems[curIdx];
   card.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -299,16 +294,45 @@ function hlCard(idx: number): void {
 }
 
 // ============================================================
-// 时间格式化
+// ETA 倒计时（丝滑版）
 // ============================================================
 
+function startEtaCountdown(): void {
+  stopEtaCountdown();
+  if (jobItems.length === 0 || !firstJobMs) return;
+  // 用第一个职位的真实耗时 × 总数
+  etaTotalMs = firstJobMs * jobItems.length;
+  updateEtaDisplay();
+  etaTimer = setInterval(updateEtaDisplay, 1000);
+}
+
+function updateEtaDisplay(): void {
+  const elapsed = startTime > 0 ? Date.now() - startTime : 0;
+  const remaining = Math.max(0, etaTotalMs - elapsed);
+  setText('__eta__', formatDuration(remaining));
+}
+
+function stopEtaCountdown(): void {
+  if (etaTimer !== null) { clearInterval(etaTimer); etaTimer = null; }
+}
+
+function recalibrateEta(): void {
+  // 每次投递后重新校准：用已投递的平均速度 × 剩余数量
+  if (subs.length === 0 || jobItems.length === 0) return;
+  const elapsed = Date.now() - startTime;
+  const avgMs = elapsed / subs.length;
+  const remaining = jobItems.length - subs.length;
+  etaTotalMs = avgMs * jobItems.length; // 保持总锚点
+  updateEtaDisplay();
+}
+
 function formatDuration(ms: number): string {
-  if (ms <= 0) return '0秒';
-  const totalSec = Math.ceil(ms / 1000);
-  if (totalSec < 60) return totalSec + '秒';
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return s > 0 ? `${m}分${s}秒` : `${m}分钟`;
+  if (ms <= 0) return '即将完成';
+  const s = Math.ceil(ms / 1000);
+  if (s < 60) return s + '秒';
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return sec > 0 ? `${m}分${sec}秒` : `${m}分钟`;
 }
 
 // ============================================================
@@ -348,11 +372,13 @@ function preset(name: string): void {
 // ============================================================
 
 function start(): void {
-  if (![AutomationState.IDLE, AutomationState.STOPPED, AutomationState.NO_MORE_JOBS].includes(currentState)) return;
+  if (!IDLE_SET.has(currentState)) return;
   stopped = false; lastClickedJobText = ''; processedCount = 0; consecutiveErrors = 0;
-  userNavigated = false;
+  userNav = false; firstJobMs = 0;
   startTime = Date.now();
+  stopEtaCountdown();
   setText('__badge__', '运行中');
+  setText('__eta__', '计算中...');
   refreshPanel();
   go(AutomationState.FIND_COMMUNICATE, 500);
 }
@@ -362,8 +388,9 @@ function stop(): void {
   if (transitionTimerId !== null) { clearTimeout(transitionTimerId); transitionTimerId = null; }
   currentState = AutomationState.STOPPED;
   sendStatus(AutomationState.STOPPED);
+  stopEtaCountdown();
   setText('__badge__', '已停止');
-  setText('__st__', STATE_CN.STOPPED);
+  setText('__st__', SCN.STOPPED);
   out('⏹ 已停止');
 }
 
@@ -377,7 +404,7 @@ async function step(state: AutomationState): Promise<void> {
   if (stopped) { currentState = AutomationState.STOPPED; sendStatus(AutomationState.STOPPED); return; }
   currentState = state;
   sendStatus(state);
-  setText('__st__', STATE_CN[state] || state);
+  setText('__st__', SCN[state] || state);
   setText('__badge__', '运行中');
   try {
     let next: AutomationState;
@@ -385,8 +412,9 @@ async function step(state: AutomationState): Promise<void> {
       case AutomationState.IDLE: next = AutomationState.IDLE; break;
       case AutomationState.STOPPED: next = AutomationState.IDLE; break;
       case AutomationState.NO_MORE_JOBS:
-        setText('__badge__', '完成');
-        setText('__st__', STATE_CN.NO_MORE_JOBS);
+        stopEtaCountdown();
+        setText('__badge__', '完成'); setText('__st__', SCN.NO_MORE_JOBS);
+        setText('__eta__', '已完成');
         out(`✅ 全部完成！共投递 <b>${subs.length}</b> 个职位`);
         next = AutomationState.NO_MORE_JOBS; break;
       case AutomationState.ERROR:
@@ -410,14 +438,14 @@ async function step(state: AutomationState): Promise<void> {
         recordSub(findBtn('留在此页') ? '弹窗已处理' : '已沟通');
         next = findBtn('留在此页') ? AutomationState.HIGHLIGHT_DIALOG : (processedCount++, consecutiveErrors = 0, AutomationState.FIND_NEXT_JOB); break;
       case AutomationState.HIGHLIGHT_DIALOG: {
-        const b = findBtn('留在此页');
-        if (!b) { processedCount++; consecutiveErrors = 0; next = AutomationState.FIND_NEXT_JOB; break; }
-        b.scrollIntoView({ behavior: 'smooth', block: 'center' }); hlEl(b);
+        const b2 = findBtn('留在此页');
+        if (!b2) { processedCount++; consecutiveErrors = 0; next = AutomationState.FIND_NEXT_JOB; break; }
+        b2.scrollIntoView({ behavior: 'smooth', block: 'center' }); hlEl(b2);
         next = AutomationState.CLICK_DIALOG; break;
       }
       case AutomationState.CLICK_DIALOG: {
-        const b = findBtn('留在此页');
-        if (b) b.click();
+        const b2 = findBtn('留在此页');
+        if (b2) b2.click();
         processedCount++; consecutiveErrors = 0;
         next = AutomationState.FIND_NEXT_JOB; break;
       }
@@ -498,7 +526,7 @@ function getTargetCard(): HTMLElement | null {
 }
 
 // ============================================================
-// 投递记录 & 导出
+// 投递记录 & ETA
 // ============================================================
 
 function recordSub(status: string): void {
@@ -508,14 +536,20 @@ function recordSub(status: string): void {
   if (ai >= 0) card = cards[ai];
   else if (lastClickedJobText) { const i = findJobByText(cards, lastClickedJobText); if (i >= 0) card = cards[i]; }
   if (card) {
-    subs.push({ time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), title: txt(card, 'a.job-name'), company: txt(card, 'span.boss-name'), location: txt(card, 'span.company-location'), tags: txt(card, 'ul.tag-list'), status });
+    subs.push({
+      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      title: txt(card, 'a.job-name'), company: txt(card, 'span.boss-name'),
+      location: txt(card, 'span.company-location'), tags: txt(card, 'ul.tag-list'), status,
+    });
     setText('__sent__', String(subs.length));
     setText('__cnt__', `${subs.length}/${jobItems.length}`);
-    // 更新 ETA
-    if (startTime > 0 && subs.length > 0) {
-      const avg = (Date.now() - startTime) / subs.length;
-      const remain = jobItems.length - subs.length;
-      setText('__eta__', formatDuration(avg * Math.max(0, remain)));
+
+    // 第一次投递完成 → 以此次真实耗时作为锚点
+    if (subs.length === 1) {
+      firstJobMs = Date.now() - startTime;
+      startEtaCountdown();
+    } else {
+      recalibrateEta();
     }
   }
 }
@@ -526,8 +560,7 @@ function doExport(): void {
   subs.forEach((j, i) => { lines.push(`【${i + 1}】${j.title}`, `  公司: ${j.company}  地址: ${j.location}`, `  要求: ${j.tags}  状态: ${j.status}  时间: ${j.time}`, ''); });
   lines.push('═══════════════════════════════════');
   const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
+  const url = URL.createObjectURL(blob); const a = document.createElement('a');
   a.href = url; a.download = `BOSS投递记录-${new Date().toISOString().slice(0, 10)}.txt`; a.click();
   URL.revokeObjectURL(url);
   out(`✅ 已导出 ${subs.length} 条记录`);
@@ -539,8 +572,7 @@ function doExport(): void {
 
 function doInspect(el: HTMLElement): void {
   const L: string[] = ['══════════ 🔍 ══════════'];
-  L.push(`Tag: <b>${esc(el.tagName.toLowerCase())}</b>`);
-  L.push(`Class: ${esc(el.className || '(无)')}`);
+  L.push(`Tag: <b>${esc(el.tagName.toLowerCase())}</b>`, `Class: ${esc(el.className || '(无)')}`);
   const r = el.getBoundingClientRect();
   L.push(`Rect: (${R(r.left)},${R(r.top)}) ${R(r.width)}×${R(r.height)}`);
   L.push(`Text: ${esc((el.textContent || '').trim().substring(0, 100))}`);
@@ -562,13 +594,10 @@ function doInspect(el: HTMLElement): void {
 function findBtn(text: string): HTMLElement | null {
   return (
     document.evaluate(`.//button[contains(text(),'${text}')]`, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue as HTMLElement
-  ) || (
-    Array.from(document.querySelectorAll('button')).find(b => b.textContent?.includes(text)) as HTMLElement
-  ) || (
-    Array.from(document.querySelectorAll('[role="button"]')).find(b => b.textContent?.includes(text)) as HTMLElement
-  ) || (
-    Array.from(document.querySelectorAll('span, a')).find(b => b.textContent?.trim() === text) as HTMLElement
-  ) || null;
+  ) || (Array.from(document.querySelectorAll('button')).find(b => b.textContent?.includes(text)) as HTMLElement)
+    || (Array.from(document.querySelectorAll('[role="button"]')).find(b => b.textContent?.includes(text)) as HTMLElement)
+    || (Array.from(document.querySelectorAll('span, a')).find(b => b.textContent?.trim() === text) as HTMLElement)
+    || null;
 }
 
 function hlEl(el: HTMLElement): void {
@@ -598,7 +627,7 @@ function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, 
 function R(n: number): string { return Math.round(n).toString(); }
 
 function sendStatus(state: AutomationState): void {
-  setText('__st__', STATE_CN[state] || state);
+  setText('__st__', SCN[state] || state);
   setText('__sent__', String(subs.length));
   setText('__cnt__', `${subs.length}/${jobItems.length}`);
   chrome.runtime.sendMessage({ type: 'STATUS', state, processedCount } satisfies StatusMessage).catch(() => {});
