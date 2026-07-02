@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BOSS自动投递</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- 标题 -->
+    <header class="header">
+      <h1 class="title">BOSS自动投递</h1>
+      <p class="subtitle">自动"立即沟通"</p>
+    </header>
+
+    <!-- 状态显示区域 -->
+    <div class="status-section">
+      <div class="status-row">
+        <span class="status-label">状态：</span>
+        <span id="statusText" class="status-value">就绪</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">已处理：</span>
+        <span id="countText" class="status-value">0 个职位</span>
+      </div>
+    </div>
+
+    <!-- 控制按钮 -->
+    <div class="control-section">
+      <button id="startBtn" class="btn btn-start" title="开始自动投递">
+        <span class="btn-icon">▶</span>
+        <span class="btn-text">开 始</span>
+      </button>
+      <button id="stopBtn" class="btn btn-stop hidden" title="停止自动投递">
+        <span class="btn-icon">⏹</span>
+        <span class="btn-text">停 止</span>
+      </button>
+    </div>
+
+    <!-- 日志区域 -->
+    <div class="log-section">
+      <div class="log-header">
+        <span>运行日志</span>
+        <button id="clearLogBtn" class="btn-clear" title="清除日志">清除</button>
+      </div>
+      <div id="logContainer" class="log-container">
+        <div class="log-entry log-info">插件已加载，等待操作...</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

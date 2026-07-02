@@ -1,0 +1,189 @@
+/* ============================================
+   BOSS自动投递 - Popup 样式
+   ============================================ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 320px;
+  min-height: 380px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  background: #f5f7fa;
+  color: #333;
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ========== 标题区域 ========== */
+.header {
+  background: linear-gradient(135deg, #1a73e8, #1557b0);
+  color: #fff;
+  padding: 20px 24px;
+  text-align: center;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+
+.subtitle {
+  font-size: 12px;
+  opacity: 0.85;
+  margin-top: 4px;
+}
+
+/* ========== 状态区域 ========== */
+.status-section {
+  padding: 16px 24px;
+  background: #fff;
+  border-bottom: 1px solid #e8eaed;
+}
+
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 14px;
+}
+
+.status-label {
+  color: #888;
+}
+
+.status-value {
+  font-weight: 600;
+  color: #333;
+}
+
+/* ========== 控制按钮 ========== */
+.control-section {
+  padding: 16px 24px;
+  text-align: center;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 12px 0;
+  font-size: 16px;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 2px;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+.btn-start {
+  background: linear-gradient(135deg, #1a73e8, #1557b0);
+  color: #fff;
+}
+
+.btn-stop {
+  background: linear-gradient(135deg, #e53935, #c62828);
+  color: #fff;
+}
+
+.btn-icon {
+  font-size: 14px;
+}
+
+/* ========== 隐藏类 ========== */
+.hidden {
+  display: none !important;
+}
+
+/* ========== 日志区域 ========== */
+.log-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px 12px;
+  min-height: 0;
+}
+
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #888;
+  margin-bottom: 6px;
+}
+
+.btn-clear {
+  background: none;
+  border: none;
+  color: #1a73e8;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.btn-clear:hover {
+  background: #e8f0fe;
+}
+
+.log-container {
+  flex: 1;
+  max-height: 150px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.log-entry {
+  padding: 2px 0;
+  border-bottom: 1px solid #f5f5f5;
+  word-break: break-all;
+}
+
+.log-entry:last-child {
+  border-bottom: none;
+}
+
+.log-info {
+  color: #555;
+}
+
+.log-warn {
+  color: #e67e22;
+}
+
+.log-error {
+  color: #e74c3c;
+}
+
+.log-success {
+  color: #27ae60;
+}

@@ -1,0 +1,13 @@
+{
+  "name": "boss-auto-apply",
+  "version": "1.0.0",
+  "description": "Chrome Extension - BOSS直聘自动投递",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}
