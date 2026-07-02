@@ -154,15 +154,14 @@ const HTML = `
   <div class="_si"><div class="_sv" style="color:#f38ba8;font-size:11px" id="__st__">就绪</div><div class="_sl">状态</div></div>
 </div>
 <div class="_bt">
-  <button class="_go" id="__start__">▶ 开 始</button>
-  <button class="_sp" id="__stop__">⏹ 停 止</button>
+  <button class="_go" id="__toggle__">▶ 开 始</button>
 </div>
 <div class="_bt">
   <button class="_na" id="__prev__" style="flex:.6;font-size:16px;">◀</button>
   <button class="_nn" id="__next__" style="flex:.6;font-size:16px;">▶</button>
   <button id="__insp__">🎯 OFF</button>
   <button id="__refresh__">🔄 刷新</button>
-  <button class="_nx" id="__export__">📥</button>
+  <button class="_nx" id="__export__">📥 导出</button>
 </div>
 <div class="_cfg" id="__cfgpnl__">
   <div class="_cgt">⚙ 速度设置 (<span id="__spdlbl__">推荐</span>)</div>
@@ -194,8 +193,10 @@ function buildPanel(): void {
     px = r.left; py = r.top; pnl!.style.transition = 'none';
   });
 
-  click('__start__', start);
-  click('__stop__', stop);
+  click('__toggle__', () => {
+    if (IDLE_SET.has(currentState)) start();
+    else stop();
+  });
   click('__prev__', () => { userNav = true; navPanel(-1); });
   click('__next__', () => { userNav = true; navPanel(1); });
   click('__refresh__', () => { out('🔄 刷新中...'); setTimeout(refreshPanel, 200); });
@@ -294,13 +295,13 @@ function hlCard(idx: number): void {
 }
 
 // ============================================================
-// ETA 倒计时（丝滑版）
+// ETA 倒计时
+// 第一次投递完成后确定总耗时锚点，之后纯倒计时不做修正
 // ============================================================
 
 function startEtaCountdown(): void {
   stopEtaCountdown();
   if (jobItems.length === 0 || !firstJobMs) return;
-  // 用第一个职位的真实耗时 × 总数
   etaTotalMs = firstJobMs * jobItems.length;
   updateEtaDisplay();
   etaTimer = setInterval(updateEtaDisplay, 1000);
@@ -314,16 +315,6 @@ function updateEtaDisplay(): void {
 
 function stopEtaCountdown(): void {
   if (etaTimer !== null) { clearInterval(etaTimer); etaTimer = null; }
-}
-
-function recalibrateEta(): void {
-  // 每次投递后重新校准：用已投递的平均速度 × 剩余数量
-  if (subs.length === 0 || jobItems.length === 0) return;
-  const elapsed = Date.now() - startTime;
-  const avgMs = elapsed / subs.length;
-  const remaining = jobItems.length - subs.length;
-  etaTotalMs = avgMs * jobItems.length; // 保持总锚点
-  updateEtaDisplay();
 }
 
 function formatDuration(ms: number): string {
@@ -379,6 +370,10 @@ function start(): void {
   stopEtaCountdown();
   setText('__badge__', '运行中');
   setText('__eta__', '计算中...');
+  // 切换按钮为停止
+  const btn = $<HTMLButtonElement>('__toggle__');
+  btn.textContent = '⏹ 停 止';
+  btn.className = '_sp';
   refreshPanel();
   go(AutomationState.FIND_COMMUNICATE, 500);
 }
@@ -391,6 +386,9 @@ function stop(): void {
   stopEtaCountdown();
   setText('__badge__', '已停止');
   setText('__st__', SCN.STOPPED);
+  const btn = $<HTMLButtonElement>('__toggle__');
+  btn.textContent = '▶ 开 始';
+  btn.className = '_go';
   out('⏹ 已停止');
 }
 
@@ -548,9 +546,7 @@ function recordSub(status: string): void {
     if (subs.length === 1) {
       firstJobMs = Date.now() - startTime;
       startEtaCountdown();
-    } else {
-      recalibrateEta();
-    }
+	    }
   }
 }
 
