@@ -1,879 +1,649 @@
 /**
- * BOSS自动投递 - Content Script
+ * BOSS自动投递 - Content Script v8
  *
- * 核心自动化逻辑，运行在 https://www.zhipin.com/* 页面。
- *
- * 设计要点：
- * - 状态机驱动（非 while(true) 死循环），通过 setTimeout 异步调度
- * - 每次循环重新查询 DOM，不缓存节点引用（应对懒加载和 DOM 变更）
- * - 所有选择器基于文字内容、role、aria-label，不依赖随机 class
- * - 操作前先高亮目标元素（红色边框+阴影 500ms），再执行 click
- * - 每个操作包裹 try-catch，失败不崩溃，记录日志后继续
+ * 精简版：可拖动面板 + 速度设置 + 自动化 + 投递记录
+ * 移除：滚动加载（用户手动预加载）、清除按钮
+ * 到达列表末尾自动停止
  */
 
 import {
   AutomationState,
   CONFIG,
+  applySpeed,
   randomWaitMs,
+  SPEED_PRESETS,
+  type SpeedSettings,
   type CommandMessage,
   type StatusMessage,
   type LogMessage,
 } from '../shared/types';
 
 // ============================================================
-// 全局状态
+// 全局
 // ============================================================
-
-/** 当前状态机状态 */
 let currentState: AutomationState = AutomationState.IDLE;
-
-/** 是否已收到停止命令 */
 let stopped = false;
-
-/** 当前处理的职位列表索引（指向下一个要点击的职位） */
-let currentJobIndex = 0;
-
-/** 已处理的职位计数 */
+let lastClickedJobText = '';
 let processedCount = 0;
-
-/** 连续错误计数（超过阈值自动停止） */
 let consecutiveErrors = 0;
-
-/** 下一次状态转换的定时器 ID（用于取消） */
 let transitionTimerId: ReturnType<typeof setTimeout> | null = null;
+
+let panel: HTMLElement | null = null;
+let jobItems: HTMLElement[] = [];
+let currentIdx = 0;
+let clickInspect = false;
+let settingsOpen = false;
+
+// 拖动
+let dragging = false, dsx = 0, dsy = 0, psx = 0, psy = 0;
+
+// 投递记录
+interface SubJob { time: string; title: string; company: string; location: string; tags: string; status: string; }
+const submittedJobs: SubJob[] = [];
+
+let speed: SpeedSettings = { ...SPEED_PRESETS.recommend };
 
 // ============================================================
 // 初始化
 // ============================================================
 
-console.log('[Content] BOSS自动投递 Content Script 已加载');
+function init(): void {
+  try {
+    if (panel) return;
+    createPanel();
+    refresh();
+  } catch (e) {
+    console.error('[BOSS] 初始化失败:', e);
+  }
+}
 
-// 监听来自 popup（经 background 转发）的命令
+// 等页面稳定后初始化
+setTimeout(init, 1500);
+// 页面完全加载后再试一次
+window.addEventListener('load', () => setTimeout(init, 2000));
+
 chrome.runtime.onMessage.addListener((message: CommandMessage) => {
   if (message.type !== 'COMMAND') return;
-
   switch (message.command) {
-    case 'START':
-      start();
-      break;
-    case 'STOP':
-      stop();
-      break;
-    case 'GET_STATUS':
-      sendStatus(currentState);
-      break;
+    case 'START': start(); break;
+    case 'STOP': stop(); break;
+    case 'GET_STATUS': sendStatus(currentState); break;
   }
 });
 
+document.addEventListener('mousemove', (e) => {
+  if (!dragging || !panel) return;
+  let nx = psx + (e.clientX - dsx);
+  let ny = psy + (e.clientY - dsy);
+  nx = Math.max(0, Math.min(nx, window.innerWidth - panel.offsetWidth));
+  ny = Math.max(0, Math.min(ny, window.innerHeight - 60));
+  panel.style.left = nx + 'px';
+  panel.style.top = ny + 'px';
+  panel.style.right = 'auto';
+});
+document.addEventListener('mouseup', () => { dragging = false; });
+
+// 点击检测
+document.addEventListener('click', (e) => {
+  if (!clickInspect) return;
+  e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+  inspectElement(e.target as HTMLElement);
+}, true);
+
 // ============================================================
-// 对外接口：start() / stop()
+// 面板
 // ============================================================
 
-/** 启动状态机 */
-function start(): void {
-  if (currentState !== AutomationState.IDLE &&
-      currentState !== AutomationState.STOPPED &&
-      currentState !== AutomationState.NO_MORE_JOBS) {
-    log('warn', '状态机已在运行中，忽略重复启动');
-    return;
-  }
+function createPanel(): void {
+  if (document.getElementById('__boss_panel__')) return;
 
-  stopped = false;
-  currentJobIndex = 0;
-  processedCount = 0;
-  consecutiveErrors = 0;
-  log('info', '========== 开始自动投递 ==========');
-  transition(AutomationState.FIND_NEXT_JOB, 500);
+  panel = document.createElement('div');
+  panel.id = '__boss_panel__';
+  panel.innerHTML =
+`<style>
+._bp{position:fixed;top:80px;right:16px;width:360px;background:#1a1a2e;color:#cdd6f4;border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,.55);z-index:999999;font-family:system-ui,-apple-system,sans-serif;font-size:12px;overflow:hidden;user-select:none;}
+._bp *{box-sizing:border-box;margin:0;padding:0;}
+._bph{cursor:move;background:linear-gradient(135deg,#2d2d44,#252540);padding:10px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #3a3a55;}
+._bph ._bphi{font-size:13px;}
+._bph ._bpht{font-weight:700;font-size:13px;color:#e2a4f5;flex:1;}
+._bph ._bphb{font-size:10px;background:#3a3a55;color:#a6adc8;padding:2px 8px;border-radius:10px;}
+._bph button{width:26px;height:26px;border-radius:6px;border:none;background:transparent;color:#a6adc8;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+._bph button:hover{background:#3a3a55;color:#fff;}
+._bps{display:flex;border-bottom:1px solid #2a2a44;}
+._bps ._bpsi{flex:1;text-align:center;padding:10px 4px;border-right:1px solid #2a2a44;}
+._bps ._bpsi:last-child{border-right:none;}
+._bps ._bpsv{font-size:18px;font-weight:700;}
+._bps ._bpsl{font-size:10px;color:#78789e;margin-top:2px;}
+._bpb{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #2a2a44;}
+._bpb button{flex:1;padding:7px 0;border:1px solid #3a3a55;border-radius:7px;background:#22223a;color:#cdd6f4;font-size:11px;cursor:pointer;transition:all .15s;}
+._bpb button:hover{background:#2d2d48;border-color:#545478;}
+._bpb ._na{background:#89b4fa;color:#1a1a2e;border-color:#89b4fa;font-weight:600;}
+._bpb ._nn{background:#a6e3a1;color:#1a1a2e;border-color:#a6e3a1;font-weight:600;}
+._bpb ._nd{background:#f38ba8;color:#1a1a2e;border-color:#f38ba8;font-weight:600;}
+._bpb ._nx{background:#a6e3a1;color:#1a1a2e;border-color:#a6e3a1;font-weight:700;}
+._bcfg{display:none;padding:10px 14px;border-bottom:1px solid #2a2a44;background:#1e1e34;}
+._bcfg.o{display:block;}
+._bcfg ._bcgt{font-size:11px;font-weight:600;color:#78789e;margin-bottom:8px;}
+._bcfg ._bcgr{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+._bcfg ._bcgr label{width:55px;font-size:11px;color:#a6adc8;flex-shrink:0;text-align:right;}
+._bcfg ._bcgr input[type=range]{flex:1;accent-color:#89b4fa;height:4px;}
+._bcfg ._bcgr ._bcgv{width:70px;font-size:11px;color:#a6e3a1;flex-shrink:0;}
+._bcfg ._bcgp{display:flex;gap:6px;margin-top:8px;}
+._bcfg ._bcgp button{flex:1;padding:6px 0;border-radius:6px;border:1px solid #3a3a55;background:#22223a;color:#cdd6f4;font-size:11px;cursor:pointer;}
+._bcfg ._bcgp button:hover{background:#2d2d48;}
+._bcfg ._bcgp ._sel{border-color:#89b4fa;color:#89b4fa;font-weight:600;}
+._bpo{max-height:260px;overflow-y:auto;padding:10px 14px;font-size:11px;line-height:1.65;color:#b4b8d0;}
+._bpo b{color:#e2a4f5;}
+._bpo ._dim{color:#585b70;}
+._bpo ._ac{color:#a6e3a1;}
+._bpo ._cu{color:#f9e2af;}
+._bpo ._sb{color:#f38ba8;}
+._bpo::-webkit-scrollbar{width:4px;}
+._bpo::-webkit-scrollbar-thumb{background:#3a3a55;border-radius:2px;}
+</style>
+<div class="_bp">
+<div class="_bph" id="_ph">
+  <span class="_bphi">≡</span>
+  <span class="_bpht">BOSS 自动投递 v8</span>
+  <span class="_bphb" id="_badge">就绪</span>
+  <button id="_cfgBtn" title="速度设置">⚙</button>
+  <button id="_minBtn" title="折叠">─</button>
+</div>
+<div class="_bps">
+  <div class="_bpsi"><div class="_bpsv" id="_cnt" style="color:#a6e3a1">-</div><div class="_bpsl">检测到</div></div>
+  <div class="_bpsi"><div class="_bpsv" id="_sent" style="color:#f5c2e7">0</div><div class="_bpsl">已投递</div></div>
+  <div class="_bpsi"><div class="_bpsv" id="_idx" style="color:#f9e2af">-</div><div class="_bpsl">当前</div></div>
+  <div class="_bpsi"><div class="_bpsv" id="_st" style="color:#f38ba8;font-size:11px;">就绪</div><div class="_bpsl">状态</div></div>
+</div>
+<div class="_bpb">
+  <button class="_na" id="_prev" style="flex:.7;font-size:16px;">◀</button>
+  <button class="_nn" id="_next" style="flex:.7;font-size:16px;">▶</button>
+  <button id="_inspect">🎯 OFF</button>
+  <button id="_export" class="_nx">📥 导出</button>
+</div>
+<div class="_bcfg" id="_cfgPanel">
+  <div class="_bcgt">⚙ 速度设置 (<span id="_speedLabel">推荐</span>)</div>
+  <div class="_bcgr"><label>高亮</label><input type="range" id="_sHl" min="100" max="2000" step="50"><span class="_bcgv" id="_sHlV">350ms</span></div>
+  <div class="_bcgr"><label>步间最小</label><input type="range" id="_sMin" min="200" max="3000" step="100"><span class="_bcgv" id="_sMinV">800ms</span></div>
+  <div class="_bcgr"><label>步间最大</label><input type="range" id="_sMax" min="500" max="5000" step="100"><span class="_bcgv" id="_sMaxV">1500ms</span></div>
+  <div class="_bcgr"><label>加载超时</label><input type="range" id="_sTmo" min="1500" max="8000" step="100"><span class="_bcgv" id="_sTmoV">4000ms</span></div>
+  <div class="_bcgp">
+    <button id="_preStable">🐢 稳定</button>
+    <button id="_preRec" class="_sel">⚡ 推荐</button>
+    <button id="_preTurbo">🚀 极速</button>
+  </div>
+</div>
+<div class="_bpo" id="_output">加载中...</div>
+</div>`;
+
+  document.body.appendChild(panel);
+
+  // 拖动
+  const ph = panel.querySelector('#_ph')!;
+  ph.addEventListener('mousedown', (e) => {
+    const me = e as MouseEvent;
+    if ((me.target as HTMLElement).tagName === 'BUTTON') return;
+    dragging = true;
+    dsx = me.clientX; dsy = me.clientY;
+    const r = panel!.getBoundingClientRect();
+    psx = r.left; psy = r.top;
+  });
+
+  // 按钮
+  on('#_prev', () => nav(-1));
+  on('#_next', () => nav(1));
+  on('#_inspect', () => {
+    clickInspect = !clickInspect;
+    const b = getEl('_inspect');
+    b.textContent = clickInspect ? '🎯 ON' : '🎯 OFF';
+    b.className = clickInspect ? '_nd' : '';
+    if (clickInspect) setOut('✅ 点击检测 ON');
+  });
+  on('#_export', exportJobs);
+  on('#_cfgBtn', () => { settingsOpen = !settingsOpen; getEl('_cfgPanel').classList.toggle('o', settingsOpen); });
+  on('#_minBtn', toggleMin);
+
+  // 设置
+  slider('_sHl', '_sHlV', 'highlightMs');
+  slider('_sMin', '_sMinV', 'minWaitMs');
+  slider('_sMax', '_sMaxV', 'maxWaitMs');
+  slider('_sTmo', '_sTmoV', 'detailTimeoutMs');
+  on('#_preStable', () => preset('stable'));
+  on('#_preRec', () => preset('recommend'));
+  on('#_preTurbo', () => preset('turbo'));
+
+  syncSliders();
 }
 
-/** 停止状态机 */
-function stop(): void {
-  log('warn', '收到停止命令，正在停止...');
-  stopped = true;
-
-  // 取消待执行的定时器
-  if (transitionTimerId !== null) {
-    clearTimeout(transitionTimerId);
-    transitionTimerId = null;
+function toggleMin(): void {
+  const kids = panel!.children[0].children;
+  for (let i = 1; i < kids.length; i++) {
+    (kids[i] as HTMLElement).style.display =
+      (kids[i] as HTMLElement).style.display === 'none' ? '' : 'none';
   }
+}
 
+// ============================================================
+// 刷新
+// ============================================================
+
+function refresh(): void {
+  try {
+    jobItems = getJobCards();
+    const ai = findActiveIdx(jobItems);
+    if (ai >= 0) currentIdx = ai;
+    updateStats();
+    buildOutput();
+    if (jobItems.length > 0 && currentIdx < jobItems.length) hlCard(currentIdx);
+  } catch (e) {
+    setOut('⚠ 刷新出错: ' + String(e));
+  }
+}
+
+function buildOutput(): void {
+  const L: string[] = [];
+  const a = (s: string) => L.push(s);
+  a(`📋 <b>${jobItems.length}</b> 个职位 | 已投递 <b class="_sb">${submittedJobs.length}</b> | ${currentState}`);
+  a('');
+  if (jobItems.length > 0) {
+    jobItems.forEach((card, i) => {
+      const title = t(card, 'a.job-name').substring(0, 22);
+      const comp = t(card, 'span.boss-name').substring(0, 10);
+      const tags = t(card, 'ul.tag-list');
+      const active = !!card.querySelector('.job-card-wrap.active');
+      const sub = submittedJobs.some(j => j.title.includes(title) || title.includes(j.title));
+      const icons = [
+        active ? '<span class="_ac">✅</span>' : '⬜',
+        i === currentIdx ? '<span class="_cu">◀</span>' : '',
+        sub ? '<span class="_sb">📤</span>' : '',
+      ].filter(Boolean).join('');
+      a(`  ${icons} [${i}] <b>${esc(title)}</b> | ${esc(comp)} <span class="_dim">${esc(tags)}</span>`);
+    });
+  } else {
+    a('⚠ 未检测到职位，请确保在搜索结果页');
+  }
+  setOut(L.join('\n'));
+}
+
+function updateStats(): void {
+  setVal('_cnt', String(jobItems.length));
+  setVal('_sent', String(submittedJobs.length));
+  setVal('_idx', jobItems.length > 0 ? String(currentIdx + 1) : '-');
+  setVal('_st', currentState);
+}
+
+function nav(delta: number): void {
+  if (jobItems.length === 0) { refresh(); return; }
+  const ni = currentIdx + delta;
+  if (ni < 0 || ni >= jobItems.length) return;
+  currentIdx = ni;
+  hlCard(currentIdx);
+  updateStats();
+  buildOutput();
+}
+
+function hlCard(idx: number): void {
+  const card = jobItems[idx];
+  if (!card) return;
+  jobItems.forEach(e => { e.style.outline = ''; e.style.boxShadow = ''; });
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.style.outline = '3px solid #f5c2e7';
+  card.style.boxShadow = '0 0 20px 4px rgba(245,194,231,0.5)';
+  setOut([
+    `📍 导航 [${idx + 1}/${jobItems.length}]`,
+    `职位: <b>${esc(t(card, 'a.job-name'))}</b>`,
+    `公司: <b>${esc(t(card, 'span.boss-name'))}</b>`,
+    `地址: ${esc(t(card, 'span.company-location'))}`,
+    `要求: ${esc(t(card, 'ul.tag-list'))}`,
+  ].join('\n'));
+}
+
+// ============================================================
+// 设置
+// ============================================================
+
+function slider(sid: string, vid: string, key: keyof SpeedSettings): void {
+  const s = getEl(sid) as HTMLInputElement;
+  const v = getEl(vid);
+  s.addEventListener('input', () => {
+    const val = parseInt(s.value);
+    v.textContent = val + 'ms';
+    (speed as any)[key] = val;
+    applySpeed(speed);
+  });
+}
+
+function syncSliders(): void {
+  (getEl('_sHl') as HTMLInputElement).value = String(speed.highlightMs);
+  getEl('_sHlV').textContent = speed.highlightMs + 'ms';
+  (getEl('_sMin') as HTMLInputElement).value = String(speed.minWaitMs);
+  getEl('_sMinV').textContent = speed.minWaitMs + 'ms';
+  (getEl('_sMax') as HTMLInputElement).value = String(speed.maxWaitMs);
+  getEl('_sMaxV').textContent = speed.maxWaitMs + 'ms';
+  (getEl('_sTmo') as HTMLInputElement).value = String(speed.detailTimeoutMs);
+  getEl('_sTmoV').textContent = speed.detailTimeoutMs + 'ms';
+}
+
+function preset(name: string): void {
+  const p = SPEED_PRESETS[name];
+  if (!p) return;
+  speed = { ...p };
+  applySpeed(speed);
+  syncSliders();
+  ['_preStable', '_preRec', '_preTurbo'].forEach(id => getEl(id).classList.remove('_sel'));
+  getEl('_pre' + (name === 'recommend' ? 'Rec' : name.charAt(0).toUpperCase() + name.slice(1))).classList.add('_sel');
+  getEl('_speedLabel').textContent = name === 'recommend' ? '推荐' : name === 'stable' ? '稳定' : '极速';
+  setOut(`✅ 已切换「${getEl('_speedLabel').textContent}」速度`);
+}
+
+// ============================================================
+// 自动化
+// ============================================================
+
+function start(): void {
+  if (currentState !== AutomationState.IDLE && currentState !== AutomationState.STOPPED && currentState !== AutomationState.NO_MORE_JOBS) return;
+  stopped = false; lastClickedJobText = ''; processedCount = 0; consecutiveErrors = 0;
+  getEl('_badge').textContent = '运行中';
+  refresh();
+  transition(AutomationState.FIND_COMMUNICATE, 500);
+}
+
+function stop(): void {
+  stopped = true;
+  if (transitionTimerId !== null) { clearTimeout(transitionTimerId); transitionTimerId = null; }
   currentState = AutomationState.STOPPED;
   sendStatus(AutomationState.STOPPED);
-  log('info', '========== 已停止 ==========');
+  getEl('_badge').textContent = '已停止';
 }
 
-// ============================================================
-// 状态机核心
-// ============================================================
+function transition(next: AutomationState, ms: number): void {
+  if (stopped) { currentState = AutomationState.STOPPED; sendStatus(AutomationState.STOPPED); return; }
+  if (transitionTimerId !== null) clearTimeout(transitionTimerId);
+  transitionTimerId = setTimeout(() => { transitionTimerId = null; runState(next); }, ms);
+}
 
-/** 状态 → 处理函数的映射表 */
-const stateHandlers: Record<AutomationState, () => Promise<AutomationState>> = {
-  [AutomationState.IDLE]:               handleIdle,
-  [AutomationState.FIND_NEXT_JOB]:      handleFindNextJob,
-  [AutomationState.HIGHLIGHT_JOB]:      handleHighlightJob,
-  [AutomationState.CLICK_JOB]:          handleClickJob,
-  [AutomationState.WAIT_DETAIL]:        handleWaitDetail,
-  [AutomationState.FIND_COMMUNICATE]:   handleFindCommunicate,
-  [AutomationState.HIGHLIGHT_COMMUNICATE]: handleHighlightCommunicate,
-  [AutomationState.CLICK_COMMUNICATE]:  handleClickCommunicate,
-  [AutomationState.CHECK_DIALOG]:       handleCheckDialog,
-  [AutomationState.HIGHLIGHT_DIALOG]:   handleHighlightDialog,
-  [AutomationState.CLICK_DIALOG]:       handleClickDialog,
-  [AutomationState.SCROLL_JOB_LIST]:    handleScrollJobList,
-  [AutomationState.WAIT_NEW_JOBS]:      handleWaitNewJobs,
-  [AutomationState.WAIT]:               handleWait,
-  [AutomationState.STOPPED]:            handleStopped,
-  [AutomationState.ERROR]:              handleError,
-  [AutomationState.NO_MORE_JOBS]:       handleNoMoreJobs,
-};
-
-/**
- * 执行当前状态，获取下一个状态，并通过 setTimeout 调度
- * 这是状态机的驱动引擎
- */
-async function executeState(state: AutomationState): Promise<void> {
-  if (stopped) {
-    currentState = AutomationState.STOPPED;
-    sendStatus(AutomationState.STOPPED);
-    return;
-  }
-
+async function runState(state: AutomationState): Promise<void> {
+  if (stopped) { currentState = AutomationState.STOPPED; sendStatus(AutomationState.STOPPED); return; }
   currentState = state;
   sendStatus(state);
-
+  updateStats();
   try {
-    const nextState = await stateHandlers[state]();
+    let next: AutomationState;
+    switch (state) {
+      case AutomationState.IDLE: next = AutomationState.IDLE; break;
+      case AutomationState.STOPPED: next = AutomationState.IDLE; break;
+      case AutomationState.NO_MORE_JOBS:
+        getEl('_badge').textContent = '完成';
+        setOut(`✅ 全部完成！共投递 <b>${submittedJobs.length}</b> 个职位`);
+        next = AutomationState.NO_MORE_JOBS; break;
+      case AutomationState.ERROR:
+        consecutiveErrors++;
+        next = consecutiveErrors >= CONFIG.MAX_ERROR_COUNT ? AutomationState.STOPPED : AutomationState.WAIT; break;
+      case AutomationState.FIND_COMMUNICATE:
+        next = findButtonByText('立即沟通') ? AutomationState.HIGHLIGHT_COMMUNICATE : AutomationState.FIND_NEXT_JOB; break;
+      case AutomationState.HIGHLIGHT_COMMUNICATE: {
+        const b = findButtonByText('立即沟通');
+        if (!b) { next = AutomationState.FIND_NEXT_JOB; break; }
+        b.scrollIntoView({ behavior: 'smooth', block: 'center' }); hlEl(b);
+        next = AutomationState.CLICK_COMMUNICATE; break;
+      }
+      case AutomationState.CLICK_COMMUNICATE: {
+        const b = findButtonByText('立即沟通');
+        if (!b) { next = AutomationState.FIND_NEXT_JOB; break; }
+        b.click(); next = AutomationState.CHECK_DIALOG; break;
+      }
+      case AutomationState.CHECK_DIALOG:
+        await sleep(speed.dialogCheckMs);
+        recordSubmit(findButtonByText('留在此页') ? '弹窗已处理' : '已沟通');
+        next = findButtonByText('留在此页') ? AutomationState.HIGHLIGHT_DIALOG : (processedCount++, consecutiveErrors = 0, AutomationState.FIND_NEXT_JOB); break;
+      case AutomationState.HIGHLIGHT_DIALOG: {
+        const b = findButtonByText('留在此页');
+        if (!b) { processedCount++; consecutiveErrors = 0; next = AutomationState.FIND_NEXT_JOB; break; }
+        b.scrollIntoView({ behavior: 'smooth', block: 'center' }); hlEl(b);
+        next = AutomationState.CLICK_DIALOG; break;
+      }
+      case AutomationState.CLICK_DIALOG: {
+        const b = findButtonByText('留在此页');
+        if (b) b.click();
+        processedCount++; consecutiveErrors = 0;
+        next = AutomationState.FIND_NEXT_JOB; break;
+      }
+      case AutomationState.FIND_NEXT_JOB: {
+        const cards = getJobCards();
+        if (cards.length === 0) { next = AutomationState.NO_MORE_JOBS; break; }
+        const ai = findActiveIdx(cards);
+        // 有选中且有下一个 → 点下一个
+        if (ai >= 0 && ai < cards.length - 1) { next = AutomationState.HIGHLIGHT_JOB; break; }
+        // 用文本指纹找
+        if (lastClickedJobText && ai < 0) {
+          const idx = findJobByText(cards, lastClickedJobText);
+          if (idx >= 0 && idx < cards.length - 1) { next = AutomationState.HIGHLIGHT_JOB; break; }
+        }
+        // 首次
+        if (!lastClickedJobText) { next = AutomationState.HIGHLIGHT_JOB; break; }
+        // 没有下一个了 → 停止
+        next = AutomationState.NO_MORE_JOBS; break;
+      }
+      case AutomationState.HIGHLIGHT_JOB: {
+        const tgt = getTargetCard();
+        if (!tgt) { lastClickedJobText = ''; next = AutomationState.FIND_NEXT_JOB; break; }
+        tgt.scrollIntoView({ behavior: 'smooth', block: 'center' }); hlEl(tgt);
+        next = AutomationState.CLICK_JOB; break;
+      }
+      case AutomationState.CLICK_JOB: {
+        const tgt = getTargetCard();
+        if (!tgt) { lastClickedJobText = ''; next = AutomationState.FIND_NEXT_JOB; break; }
+        lastClickedJobText = (tgt.textContent || '').trim().substring(0, 60);
+        const box = tgt.querySelector('li.job-card-box') as HTMLElement | null;
+        (box || tgt).click();
+        next = AutomationState.WAIT_DETAIL; break;
+      }
+      case AutomationState.WAIT_DETAIL: {
+        const b = await waitFor(() => findButtonByText('立即沟通'), speed.detailTimeoutMs);
+        next = b ? AutomationState.FIND_COMMUNICATE : AutomationState.WAIT; break;
+      }
+      default: next = AutomationState.WAIT;
+    }
     if (stopped) return;
-
-    // 根据下一状态决定延迟
-    const delay = getTransitionDelay(nextState);
-    transition(nextState, delay);
+    const delay = (
+      next === AutomationState.HIGHLIGHT_JOB || next === AutomationState.HIGHLIGHT_COMMUNICATE || next === AutomationState.HIGHLIGHT_DIALOG
+    ) ? speed.highlightMs : next === AutomationState.WAIT ? randomWaitMs() : speed.minWaitMs;
+    transition(next, delay);
   } catch (err) {
-    // 任何未捕获的错误都不会导致崩溃
-    handleStateError(err);
+    log('error', `[${state}] ${String(err)}`);
+    transition(AutomationState.ERROR, 1000);
   }
 }
 
-/**
- * 调度状态转换
- * @param nextState 下一个状态
- * @param delayMs  延迟毫秒数
- */
-function transition(nextState: AutomationState, delayMs: number = 0): void {
-  if (stopped) {
-    currentState = AutomationState.STOPPED;
-    sendStatus(AutomationState.STOPPED);
-    return;
-  }
-
-  // 清除之前的定时器
-  if (transitionTimerId !== null) {
-    clearTimeout(transitionTimerId);
-  }
-
-  transitionTimerId = setTimeout(() => {
-    transitionTimerId = null;
-    executeState(nextState);
-  }, delayMs);
-}
-
-/**
- * 根据下一状态返回合适的转换延迟
- */
-function getTransitionDelay(state: AutomationState): number {
-  switch (state) {
-    case AutomationState.HIGHLIGHT_JOB:
-    case AutomationState.HIGHLIGHT_COMMUNICATE:
-    case AutomationState.HIGHLIGHT_DIALOG:
-      return CONFIG.HIGHLIGHT_DURATION_MS; // 500ms 高亮显示
-    case AutomationState.WAIT:
-      return randomWaitMs(); // 1000-3000ms 随机等待
-    case AutomationState.WAIT_DETAIL:
-      return 1500; // 等待详情渲染
-    case AutomationState.WAIT_NEW_JOBS:
-      return 2000; // 初始等待，然后由 waitForNewJobs 接管
-    default:
-      return 300; // 默认短延迟
-  }
+function getDelay(next: AutomationState): number {
+  if (next === AutomationState.HIGHLIGHT_JOB || next === AutomationState.HIGHLIGHT_COMMUNICATE || next === AutomationState.HIGHLIGHT_DIALOG) return speed.highlightMs;
+  if (next === AutomationState.WAIT) return randomWaitMs();
+  return speed.minWaitMs;
 }
 
 // ============================================================
-// 状态处理函数
+// 职位查询
 // ============================================================
 
-/** IDLE: 等待开始命令，不做任何操作 */
-async function handleIdle(): Promise<AutomationState> {
-  return AutomationState.IDLE;
-}
-
-/** STOPPED: 已停止 */
-async function handleStopped(): Promise<AutomationState> {
-  return AutomationState.IDLE;
-}
-
-/** NO_MORE_JOBS: 所有职位已处理完毕 */
-async function handleNoMoreJobs(): Promise<AutomationState> {
-  log('info', `所有职位已处理完毕！共处理 ${processedCount} 个职位`);
-  return AutomationState.NO_MORE_JOBS;
-}
-
-/** ERROR: 错误处理，记录日志后根据情况重试或停止 */
-async function handleError(): Promise<AutomationState> {
-  consecutiveErrors++;
-
-  if (consecutiveErrors >= CONFIG.MAX_ERROR_COUNT) {
-    log('error', `连续错误达到 ${CONFIG.MAX_ERROR_COUNT} 次，自动停止`);
-    return AutomationState.STOPPED;
+function getJobCards(): HTMLElement[] {
+  const ul = document.querySelector('ul.rec-job-list') as HTMLElement | null;
+  if (ul) return Array.from(ul.children).filter(c => c.tagName === 'DIV' && c.className.includes('card-area')) as HTMLElement[];
+  for (const u of document.querySelectorAll('ul')) {
+    const cards = Array.from(u.children).filter(c => c.tagName === 'DIV' && c.className.includes('card-area')) as HTMLElement[];
+    if (cards.length >= 3) return cards;
   }
-
-  log('warn', `错误恢复中 (${consecutiveErrors}/${CONFIG.MAX_ERROR_COUNT})，等待后重试...`);
-  return AutomationState.WAIT;
+  return Array.from(document.querySelectorAll('div.card-area')) as HTMLElement[];
 }
 
-/** FIND_NEXT_JOB: 查找下一条待处理的职位 */
-async function handleFindNextJob(): Promise<AutomationState> {
-  const items = getJobItems();
-
-  if (items.length === 0) {
-    log('warn', '未找到职位列表元素，尝试滚动加载...');
-    return AutomationState.SCROLL_JOB_LIST;
-  }
-
-  if (currentJobIndex >= items.length) {
-    // 当前列表已处理完，尝试滚动加载更多
-    log('info', `已处理完当前列表 ${items.length} 个职位，尝试加载更多...`);
-    return AutomationState.SCROLL_JOB_LIST;
-  }
-
-  log('info', `定位第 ${currentJobIndex + 1}/${items.length} 个职位`);
-  return AutomationState.HIGHLIGHT_JOB;
+function findActiveIdx(cards: HTMLElement[]): number {
+  return cards.findIndex(c => c.querySelector('.job-card-wrap.active') !== null);
 }
 
-/** HIGHLIGHT_JOB: 高亮当前职位元素 */
-async function handleHighlightJob(): Promise<AutomationState> {
-  const items = getJobItems();
-  if (currentJobIndex >= items.length) {
-    return AutomationState.SCROLL_JOB_LIST;
-  }
-
-  const target = items[currentJobIndex];
-  // 滚动到目标元素可视区域
-  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-  // 高亮并等待 500ms（由 transition 的延迟处理）
-  highlightElement(target);
-  log('info', '高亮职位元素 → 准备点击');
-  return AutomationState.CLICK_JOB;
+function findJobByText(cards: HTMLElement[], text: string): number {
+  const n = text.substring(0, 30).trim();
+  if (!n) return -1;
+  return cards.findIndex(c => (c.textContent || '').trim().substring(0, 60).includes(n));
 }
 
-/** CLICK_JOB: 点击职位元素，打开详情 */
-async function handleClickJob(): Promise<AutomationState> {
-  const items = getJobItems();
-  if (currentJobIndex >= items.length) {
-    return AutomationState.SCROLL_JOB_LIST;
-  }
-
-  const target = items[currentJobIndex];
-  target.click();
-  log('info', `已点击第 ${currentJobIndex + 1} 个职位`);
-  return AutomationState.WAIT_DETAIL;
-}
-
-/** WAIT_DETAIL: 等待右侧详情面板加载 */
-async function handleWaitDetail(): Promise<AutomationState> {
-  // 等待"立即沟通"按钮出现（最多等待 CONFIG.DETAIL_LOAD_TIMEOUT_MS）
-  const btn = await waitForElement(
-    () => findButtonByText('立即沟通'),
-    CONFIG.DETAIL_LOAD_TIMEOUT_MS
-  );
-
-  if (!btn) {
-    log('warn', '等待详情加载超时，跳过当前职位');
-    currentJobIndex++;
-    return AutomationState.WAIT;
-  }
-
-  log('info', '详情加载完成，找到"立即沟通"按钮');
-  return AutomationState.FIND_COMMUNICATE;
-}
-
-/** FIND_COMMUNICATE: 查找"立即沟通"按钮 */
-async function handleFindCommunicate(): Promise<AutomationState> {
-  const btn = findButtonByText('立即沟通');
-
-  if (!btn) {
-    log('warn', '未找到"立即沟通"按钮，跳过当前职位');
-    currentJobIndex++;
-    return AutomationState.WAIT;
-  }
-
-  log('info', '找到"立即沟通"按钮');
-  return AutomationState.HIGHLIGHT_COMMUNICATE;
-}
-
-/** HIGHLIGHT_COMMUNICATE: 高亮"立即沟通"按钮 */
-async function handleHighlightCommunicate(): Promise<AutomationState> {
-  const btn = findButtonByText('立即沟通');
-  if (!btn) {
-    currentJobIndex++;
-    return AutomationState.WAIT;
-  }
-
-  btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  highlightElement(btn);
-  log('info', '高亮"立即沟通"按钮 → 准备点击');
-  return AutomationState.CLICK_COMMUNICATE;
-}
-
-/** CLICK_COMMUNICATE: 点击"立即沟通"按钮 */
-async function handleClickCommunicate(): Promise<AutomationState> {
-  const btn = findButtonByText('立即沟通');
-  if (!btn) {
-    log('warn', '"立即沟通"按钮已消失，可能已处理过');
-    currentJobIndex++;
-    return AutomationState.WAIT;
-  }
-
-  btn.click();
-  log('info', '已点击"立即沟通"');
-  return AutomationState.CHECK_DIALOG;
-}
-
-/** CHECK_DIALOG: 检查是否出现"留在此页"弹窗 */
-async function handleCheckDialog(): Promise<AutomationState> {
-  // 等待弹窗可能出现（短暂延迟）
-  await sleep(800);
-
-  const dialogBtn = findButtonByText('留在此页');
-
-  if (dialogBtn) {
-    log('info', '检测到"留在此页"弹窗');
-    return AutomationState.HIGHLIGHT_DIALOG;
-  }
-
-  log('info', '无弹窗，处理完成');
-  // 当前职位处理完成
-  currentJobIndex++;
-  processedCount++;
-  consecutiveErrors = 0; // 成功后重置错误计数
-  return AutomationState.WAIT;
-}
-
-/** HIGHLIGHT_DIALOG: 高亮"留在此页"按钮 */
-async function handleHighlightDialog(): Promise<AutomationState> {
-  const dialogBtn = findButtonByText('留在此页');
-  if (!dialogBtn) {
-    // 弹窗已消失
-    currentJobIndex++;
-    processedCount++;
-    consecutiveErrors = 0;
-    return AutomationState.WAIT;
-  }
-
-  dialogBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  highlightElement(dialogBtn);
-  log('info', '高亮"留在此页"按钮 → 准备点击');
-  return AutomationState.CLICK_DIALOG;
-}
-
-/** CLICK_DIALOG: 点击"留在此页"按钮 */
-async function handleClickDialog(): Promise<AutomationState> {
-  const dialogBtn = findButtonByText('留在此页');
-  if (!dialogBtn) {
-    // 弹窗已消失
-    currentJobIndex++;
-    processedCount++;
-    consecutiveErrors = 0;
-    return AutomationState.WAIT;
-  }
-
-  dialogBtn.click();
-  log('info', '已点击"留在此页"');
-  currentJobIndex++;
-  processedCount++;
-  consecutiveErrors = 0;
-  return AutomationState.WAIT;
-}
-
-/** SCROLL_JOB_LIST: 滚动职位列表以触发懒加载 */
-async function handleScrollJobList(): Promise<AutomationState> {
-  const scrolled = scrollJobList();
-
-  if (!scrolled) {
-    log('info', '无法滚动列表，可能已到底部');
-    return AutomationState.NO_MORE_JOBS;
-  }
-
-  log('info', '已滚动职位列表，等待新职位加载...');
-  return AutomationState.WAIT_NEW_JOBS;
-}
-
-/** WAIT_NEW_JOBS: 等待新职位节点加载完成 */
-async function handleWaitNewJobs(): Promise<AutomationState> {
-  const hasNew = await waitForNewJobs();
-
-  if (hasNew) {
-    log('info', '检测到新职位已加载');
-    return AutomationState.FIND_NEXT_JOB;
-  }
-
-  // 超时仍无新职位
-  log('info', '无更多新职位加载');
-  return AutomationState.NO_MORE_JOBS;
-}
-
-/** WAIT: 随机等待，然后回到查找下一条 */
-async function handleWait(): Promise<AutomationState> {
-  return AutomationState.FIND_NEXT_JOB;
+function getTargetCard(): HTMLElement | null {
+  const cards = getJobCards();
+  if (cards.length === 0) return null;
+  const ai = findActiveIdx(cards);
+  if (ai >= 0 && ai < cards.length - 1) return cards[ai + 1];
+  if (lastClickedJobText) { const i = findJobByText(cards, lastClickedJobText); if (i >= 0 && i < cards.length - 1) return cards[i + 1]; }
+  return cards[0];
 }
 
 // ============================================================
-// DOM 操作工具函数
+// 投递记录
 // ============================================================
 
-/**
- * 按文字内容查找按钮
- * 使用多种策略，优先 XPath 文字匹配，其次 role/aria-label
- *
- * @param text 按钮文字（支持部分匹配）
- * @returns 匹配的元素，未找到返回 null
- */
-function findButtonByText(text: string): HTMLElement | null {
-  // 策略 1: XPath 精确文字匹配 button 标签
-  const xpath = `.//button[contains(text(), '${text}')]`;
-  const byXpath = document.evaluate(
-    xpath,
-    document,
-    null,
-    XPathResult.FIRST_ORDERED_NODE_TYPE,
-    null
-  ).singleNodeValue as HTMLElement | null;
-  if (byXpath) return byXpath;
+function recordSubmit(status: string): void {
+  const cards = getJobCards();
+  let card: HTMLElement | null = null;
+  const ai = findActiveIdx(cards);
+  if (ai >= 0) card = cards[ai];
+  else if (lastClickedJobText) { const i = findJobByText(cards, lastClickedJobText); if (i >= 0) card = cards[i]; }
 
-  // 策略 2: 查找所有 <button>，匹配 innerText
-  const buttons = Array.from(document.querySelectorAll('button'));
-  const byButtonText = buttons.find(
-    (btn) => btn.textContent?.includes(text)
-  ) as HTMLElement | undefined;
-  if (byButtonText) return byButtonText;
-
-  // 策略 3: 查找 role="button" 且文字匹配的元素
-  const roleButtons = Array.from(document.querySelectorAll('[role="button"]'));
-  const byRole = roleButtons.find(
-    (el) => el.textContent?.includes(text)
-  ) as HTMLElement | undefined;
-  if (byRole) return byRole;
-
-  // 策略 4: 查找包含文字的 <span> 或 <a> 标签（有些按钮不用 <button> 实现）
-  const spans = Array.from(document.querySelectorAll('span, a, div[role="button"]'));
-  const bySpan = spans.find(
-    (el) => el.textContent?.trim() === text || el.textContent?.includes(text)
-  ) as HTMLElement | undefined;
-  if (bySpan) return bySpan;
-
-  // 策略 5: 检查 aria-label 属性
-  const allElements = Array.from(document.querySelectorAll('[aria-label]'));
-  const byAria = allElements.find(
-    (el) => el.getAttribute('aria-label')?.includes(text)
-  ) as HTMLElement | undefined;
-  if (byAria) return byAria;
-
-  return null;
-}
-
-/**
- * 高亮目标元素
- * 添加醒目的红色边框和阴影效果，视觉反馈当前操作目标
- * 注意：样式会在 transition 的 HIGHLIGHT_DURATION_MS 后被 click 状态覆盖（通过后续状态点击）
- *
- * @param el 要高亮的 DOM 元素
- */
-function highlightElement(el: HTMLElement): void {
-  const originalOutline = el.style.outline;
-  const originalBoxShadow = el.style.boxShadow;
-  const originalTransition = el.style.transition;
-
-  // 设置高亮样式
-  el.style.outline = '3px solid red';
-  el.style.boxShadow = '0 0 16px 4px rgba(255, 0, 0, 0.6)';
-  el.style.transition = 'outline 0.3s, box-shadow 0.3s';
-
-  // 500ms 后移除高亮
-  setTimeout(() => {
-    el.style.outline = originalOutline;
-    el.style.boxShadow = originalBoxShadow;
-    el.style.transition = originalTransition;
-  }, CONFIG.HIGHLIGHT_DURATION_MS);
-}
-
-/**
- * 获取当前可见的职位列表项
- * 每次调用都重新查询 DOM，不缓存
- *
- * 查找策略（按优先级）：
- * 1. 查找所有 <li> 中符合职位卡片特征的
- * 2. 查找职位列表容器中结构相似的子元素
- * 3. 匹配包含薪资、公司等职位特征的卡片元素
- *
- * @returns 职位元素数组
- */
-function getJobItems(): HTMLElement[] {
-  // 策略 1: 查找 <li> 元素中包含职位信息的（BOSS直聘常用 li 列表）
-  const allLi = Array.from(document.querySelectorAll('li')) as HTMLElement[];
-  const jobLis = allLi.filter((li) => {
-    const text = li.textContent || '';
-    // 职位卡片通常包含：职位名 + 公司名 + 薪资/地点等信息
-    return text.length > 20 && text.length < 500 && isJobCardLike(text);
-  });
-
-  if (jobLis.length >= 3) {
-    // 确保这些 <li> 是同级且结构相似的（同一列表）
-    const siblings = getLargestSiblingGroup(jobLis);
-    if (siblings.length >= 3) return siblings;
-  }
-
-  // 策略 2: 查找职位列表区域内的可点击卡片
-  // 寻找包含大量相似子元素的容器
-  const container = findJobListContainer();
-  if (container) {
-    const cards = Array.from(container.children) as HTMLElement[];
-    const jobCards = cards.filter((card) => {
-      const text = card.textContent || '';
-      return text.length > 20 && isJobCardLike(text);
+  if (card) {
+    submittedJobs.push({
+      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      title: t(card, 'a.job-name'),
+      company: t(card, 'span.boss-name'),
+      location: t(card, 'span.company-location'),
+      tags: t(card, 'ul.tag-list'),
+      status,
     });
-
-    if (jobCards.length >= 3) return jobCards;
+    updateStats();
+    log('info', `📝 ${t(card, 'a.job-name')}`);
   }
-
-  // 策略 3: 全局搜索所有类似职位卡片的可点击元素
-  const clickables = Array.from(
-    document.querySelectorAll('div[class*="card"], div[class*="item"], li[class*="card"], li[class*="item"]')
-  ) as HTMLElement[];
-
-  const cards = clickables.filter((el) => {
-    const text = el.textContent || '';
-    return isJobCardLike(text);
-  });
-
-  if (cards.length >= 3) return cards;
-
-  // 策略 4: 最后的兜底——查找所有可点击的、包含职位关键词的 div/li
-  const allDivs = Array.from(document.querySelectorAll('div, li')) as HTMLElement[];
-  const fallbackCards = allDivs.filter((el) => {
-    const text = el.textContent || '';
-    // 必须有职位特征且可点击（或者是可交互的）
-    return text.length > 15 && text.length < 300 && isJobCardLike(text);
-  });
-
-  // 取最大同级组
-  return getLargestSiblingGroup(fallbackCards);
 }
 
-/**
- * 判断文本内容是否像职位卡片
- * 职位卡片特征：包含职位名称（如工程师、经理等）+ 公司名或薪资信息
- */
-function isJobCardLike(text: string): boolean {
-  // 常见职位关键词
-  const jobKeywords = [
-    '工程师', '经理', '专员', '设计师', '运营', '开发',
-    '产品', '销售', '市场', '财务', 'HR', '行政', '客服',
-    '前端', '后端', '全栈', '测试', '运维', '架构师',
-    '工程師', '設計師', '產品', '營運', '行銷',
+// ============================================================
+// 导出
+// ============================================================
+
+function exportJobs(): void {
+  if (submittedJobs.length === 0) { setOut('⚠ 还没有投递记录'); return; }
+  const lines = [
+    '═══════════════════════════════════',
+    '  BOSS直聘 投递记录',
+    `  导出: ${new Date().toLocaleString('zh-CN')}`,
+    `  共 ${submittedJobs.length} 个职位`,
+    '═══════════════════════════════════', '',
   ];
-
-  const hasJobKeyword = jobKeywords.some((kw) => text.includes(kw));
-  if (!hasJobKeyword) return false;
-
-  // 应该包含薪资或地点信息
-  const hasSalaryOrLocation = /\d{1,2}[kK万]/.test(text) || /北京|上海|广州|深圳|杭州|成都|武汉/.test(text);
-  return hasSalaryOrLocation;
-}
-
-/**
- * 从元素数组中找出最大的同级元素组
- * （同属一个父容器的元素）
- */
-function getLargestSiblingGroup(elements: HTMLElement[]): HTMLElement[] {
-  if (elements.length === 0) return [];
-
-  // 按父元素分组
-  const groups = new Map<HTMLElement, HTMLElement[]>();
-  for (const el of elements) {
-    const parent = el.parentElement;
-    if (!parent) continue;
-    if (!groups.has(parent)) groups.set(parent, []);
-    groups.get(parent)!.push(el);
-  }
-
-  // 返回最大分组
-  let largest: HTMLElement[] = [];
-  for (const group of groups.values()) {
-    if (group.length > largest.length) {
-      largest = group;
-    }
-  }
-
-  return largest;
-}
-
-/**
- * 查找职位列表的滚动容器
- * 特征：包含大量子元素的、可滚动的容器
- */
-function findJobListContainer(): HTMLElement | null {
-  // 查找所有可滚动元素
-  const scrollables = Array.from(document.querySelectorAll('*')).filter((el) => {
-    const style = window.getComputedStyle(el);
-    const overflow = style.overflowY || style.overflow;
-    return (
-      (overflow === 'auto' || overflow === 'scroll') &&
-      el.scrollHeight > el.clientHeight + 50
-    );
-  }) as HTMLElement[];
-
-  // 选择包含最多子元素的那个（且子元素看起来像职位卡片）
-  let bestContainer: HTMLElement | null = null;
-  let bestScore = 0;
-
-  for (const container of scrollables) {
-    const children = Array.from(container.children) as HTMLElement[];
-    const jobLikeCount = children.filter((child) => {
-      const text = child.textContent || '';
-      return text.length > 20 && isJobCardLike(text);
-    }).length;
-
-    if (jobLikeCount > bestScore) {
-      bestScore = jobLikeCount;
-      bestContainer = container;
-    }
-  }
-
-  return bestContainer;
-}
-
-/**
- * 滚动职位列表到底部，触发懒加载
- * @returns 是否成功执行了滚动
- */
-function scrollJobList(): boolean {
-  const container = findJobListContainer();
-
-  if (container) {
-    // 滚动到列表容器底部
-    container.scrollTo({
-      top: container.scrollHeight,
-      behavior: 'smooth',
-    });
-    return true;
-  }
-
-  // 兜底：如果有职位列表项，滚动它们的父容器
-  const items = getJobItems();
-  if (items.length > 0) {
-    const parent = items[0].parentElement;
-    if (parent) {
-      parent.scrollTo({
-        top: parent.scrollHeight,
-        behavior: 'smooth',
-      });
-      return true;
-    }
-  }
-
-  // 最后兜底：滚动整个页面
-  window.scrollTo({
-    top: document.body.scrollHeight,
-    behavior: 'smooth',
+  submittedJobs.forEach((j, i) => {
+    lines.push(`【${i + 1}】${j.title}`);
+    lines.push(`  公司: ${j.company}  地址: ${j.location}`);
+    lines.push(`  要求: ${j.tags}  状态: ${j.status}  时间: ${j.time}`, '');
   });
-  return true;
+  lines.push('═══════════════════════════════════');
+  download(lines.join('\n'), `BOSS投递记录-${new Date().toISOString().slice(0, 10)}.txt`);
+  setOut(`✅ 已导出 ${submittedJobs.length} 条记录`);
 }
 
-/**
- * 等待新职位节点出现在 DOM 中
- * 使用 MutationObserver 监听职位列表容器的子节点变化
- *
- * @returns 是否在超时前检测到新节点
- */
-function waitForNewJobs(): Promise<boolean> {
-  return new Promise((resolve) => {
-    // 记录当前职位数量
-    const currentCount = getJobItems().length;
-    log('info', `当前列表有 ${currentCount} 个职位，等待新职位加载...`);
+// ============================================================
+// 点击检测
+// ============================================================
 
-    const container = findJobListContainer();
+function inspectElement(el: HTMLElement): void {
+  const L: string[] = [];
+  const a = (s: string) => L.push(s);
+  a('══════════ 🔍 ══════════');
+  a(`Tag: <b>${esc(el.tagName.toLowerCase())}</b>`);
+  a(`Class: ${esc(el.className || '(无)')}`);
+  const r = el.getBoundingClientRect();
+  a(`Rect: (${R(r.left)},${R(r.top)}) ${R(r.width)}×${R(r.height)}`);
+  a(`CSS: <code>${esc(cssPath(el))}</code>`);
+  a(`Text: ${esc((el.textContent || '').trim().substring(0, 100))}`);
+  a('── 祖先 ──');
+  let cur: HTMLElement | null = el;
+  for (let i = 0; i < 6 && cur; i++) {
+    const rc = cur.getBoundingClientRect();
+    a(`  L${i}: &lt;${esc(cur.tagName.toLowerCase())}&gt; "${esc((cur.className || '').substring(0, 40))}" @(${R(rc.left)},${R(rc.top)}) ${R(rc.width)}×${R(rc.height)}`);
+    cur = cur.parentElement;
+  }
+  a('═══════════════════════');
+  setOut(L.join('\n'));
+}
 
-    if (!container) {
-      // 没有找到容器，使用轮询方式
-      pollForNewJobs(currentCount, resolve);
-      return;
+// ============================================================
+// DOM 工具
+// ============================================================
+
+function findButtonByText(text: string): HTMLElement | null {
+  return (
+    document.evaluate(`.//button[contains(text(),'${text}')]`, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue as HTMLElement
+  ) || (
+    Array.from(document.querySelectorAll('button')).find(b => b.textContent?.includes(text)) as HTMLElement
+  ) || (
+    Array.from(document.querySelectorAll('[role="button"]')).find(b => b.textContent?.includes(text)) as HTMLElement
+  ) || (
+    Array.from(document.querySelectorAll('span, a')).find(b => b.textContent?.trim() === text) as HTMLElement
+  ) || null;
+}
+
+function hlEl(el: HTMLElement): void {
+  const o = el.style.outline, s = el.style.boxShadow, tr = el.style.transition;
+  el.style.outline = '3px solid #f38ba8';
+  el.style.boxShadow = '0 0 18px 5px rgba(243,139,168,0.6)';
+  el.style.transition = 'outline .2s,box-shadow .2s';
+  setTimeout(() => { el.style.outline = o; el.style.boxShadow = s; el.style.transition = tr; }, speed.highlightMs);
+}
+
+function waitFor<T>(fn: () => T | null, ms: number): Promise<T | null> {
+  return new Promise(r => { const t0 = Date.now(); const c = () => { const v = fn(); if (v) r(v); else if (Date.now() - t0 >= ms) r(null); else setTimeout(c, 300); }; c(); });
+}
+
+function cssPath(el: HTMLElement): string {
+  const p: string[] = [];
+  let c: HTMLElement | null = el;
+  while (c && c !== document.body && c !== document.documentElement) {
+    let s = c.tagName.toLowerCase();
+    if (c.id) { p.unshift('#' + c.id); break; }
+    if (c.className && typeof c.className === 'string') {
+      const cls = c.className.trim().split(/\s+/).filter(x => x && !x.includes(':')).slice(0, 2);
+      if (cls.length) s += '.' + cls.join('.');
     }
-
-    // 使用 MutationObserver 监听 DOM 变更
-    let resolved = false;
-    const timeoutId = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        observer.disconnect();
-        const newCount = getJobItems().length;
-        resolve(newCount > currentCount);
-      }
-    }, CONFIG.MUTATION_OBSERVER_TIMEOUT_MS);
-
-    const observer = new MutationObserver(() => {
-      if (resolved) return;
-      const newCount = getJobItems().length;
-      if (newCount > currentCount) {
-        resolved = true;
-        clearTimeout(timeoutId);
-        observer.disconnect();
-        log('info', `新职位已加载：${currentCount} → ${newCount}`);
-        resolve(true);
-      }
-    });
-
-    // 监听容器的子节点变化
-    observer.observe(container, {
-      childList: true,
-      subtree: true,
-    });
-
-    // 同时启动轮询作为双保险
-    const pollInterval = setInterval(() => {
-      if (resolved) {
-        clearInterval(pollInterval);
-        return;
-      }
-      const newCount = getJobItems().length;
-      if (newCount > currentCount) {
-        resolved = true;
-        clearInterval(pollInterval);
-        clearTimeout(timeoutId);
-        observer.disconnect();
-        log('info', `轮询检测到新职位：${currentCount} → ${newCount}`);
-        resolve(true);
-      }
-    }, 1000);
-  });
-}
-
-/**
- * 轮询方式等待新职位
- */
-function pollForNewJobs(
-  initialCount: number,
-  resolve: (value: boolean) => void,
-  startTime: number = Date.now()
-): void {
-  const elapsed = Date.now() - startTime;
-
-  if (elapsed > CONFIG.NEW_JOB_TIMEOUT_MS) {
-    const newCount = getJobItems().length;
-    resolve(newCount > initialCount);
-    return;
-  }
-
-  const newCount = getJobItems().length;
-  if (newCount > initialCount) {
-    resolve(true);
-    return;
-  }
-
-  setTimeout(() => pollForNewJobs(initialCount, resolve, startTime), 500);
-}
-
-/**
- * 等待某个条件成立
- * 通过轮询检查一个函数，直到它返回真值或超时
- *
- * @param fn     返回目标元素或真值的函数
- * @param timeoutMs 超时毫秒数
- * @returns 目标值或 null
- */
-function waitForElement<T>(
-  fn: () => T | null,
-  timeoutMs: number = CONFIG.DETAIL_LOAD_TIMEOUT_MS
-): Promise<T | null> {
-  return new Promise((resolve) => {
-    const startTime = Date.now();
-
-    function check(): void {
-      const result = fn();
-      if (result) {
-        resolve(result);
-        return;
-      }
-
-      if (Date.now() - startTime >= timeoutMs) {
-        resolve(null);
-        return;
-      }
-
-      setTimeout(check, 300);
+    const par = c.parentElement;
+    if (par) {
+      const sibs = Array.from(par.children).filter(x => x.tagName === c!.tagName);
+      if (sibs.length > 1) s += `:nth-of-type(${sibs.indexOf(c) + 1})`;
     }
-
-    check();
-  });
-}
-
-// ============================================================
-// 错误处理
-// ============================================================
-
-/**
- * 状态处理中的错误捕获
- * 记录日志，转换到 ERROR 状态（由 handleError 决定下一步）
- */
-function handleStateError(err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  log('error', `状态 [${currentState}] 出错: ${message}`);
-  transition(AutomationState.ERROR, 500);
-}
-
-// ============================================================
-// 消息通信
-// ============================================================
-
-/**
- * 发送状态更新到 popup（通过 background 转发）
- */
-function sendStatus(state: AutomationState, error?: string): void {
-  const msg: StatusMessage = {
-    type: 'STATUS',
-    state,
-    processedCount,
-    error,
-  };
-
-  chrome.runtime.sendMessage(msg).catch(() => {
-    // popup 未打开时忽略
-  });
-}
-
-/**
- * 记录日志并发送到 popup
- */
-function log(level: 'info' | 'warn' | 'error', message: string): void {
-  const prefix = '[BOSS自动投递]';
-  const fullMsg = `${prefix} ${message}`;
-
-  // 同时输出到浏览器控制台
-  switch (level) {
-    case 'warn':  console.warn(fullMsg); break;
-    case 'error': console.error(fullMsg); break;
-    default:      console.log(fullMsg); break;
+    p.unshift(s); c = par;
   }
-
-  // 发送到 popup
-  const logMsg: LogMessage = { type: 'LOG', level, message };
-  chrome.runtime.sendMessage(logMsg).catch(() => {});
+  return p.join(' > ');
 }
 
+function t(el: HTMLElement, sel: string): string { const e = el.querySelector(sel); return e ? (e.textContent || '').trim() : ''; }
+function sleep(ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)); }
+
 // ============================================================
-// 通用工具
+// 工具
 // ============================================================
 
-/** Promise 版本的 setTimeout */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function getEl(id: string): HTMLElement { return document.getElementById(id)!; }
+function on(id: string, fn: () => void): void { getEl(id).addEventListener('click', fn); }
+function setVal(id: string, text: string): void { const el = getEl(id); if (el) el.textContent = text; }
+function setOut(html: string): void { const el = getEl('_output'); if (el) el.innerHTML = html.replace(/\n/g, '<br>'); }
+function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function R(n: number): string { return Math.round(n).toString(); }
+
+function download(text: string, filename: string): void {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function sendStatus(state: AutomationState): void {
+  updateStats();
+  chrome.runtime.sendMessage({ type: 'STATUS', state, processedCount } satisfies StatusMessage).catch(() => {});
+}
+
+function log(level: 'info' | 'warn' | 'error', msg: string): void {
+  const m = `[BOSS] ${msg}`;
+  switch (level) { case 'warn': console.warn(m); break; case 'error': console.error(m); break; default: console.log(m); break; }
+  chrome.runtime.sendMessage({ type: 'LOG', level, message: msg } satisfies LogMessage).catch(() => {});
 }

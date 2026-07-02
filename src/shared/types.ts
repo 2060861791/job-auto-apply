@@ -1,9 +1,5 @@
-/**
- * 共享类型定义
- * 用于 popup、content script、background 之间的消息通信
- */
+/** 共享类型定义 */
 
-/** 自动化状态枚举 */
 export enum AutomationState {
   IDLE = 'IDLE',
   FIND_NEXT_JOB = 'FIND_NEXT_JOB',
@@ -24,49 +20,66 @@ export enum AutomationState {
   NO_MORE_JOBS = 'NO_MORE_JOBS',
 }
 
-/** 命令消息：popup → content script */
-export interface CommandMessage {
-  type: 'COMMAND';
-  command: 'START' | 'STOP' | 'GET_STATUS';
-}
-
-/** 状态更新消息：content script → popup */
-export interface StatusMessage {
-  type: 'STATUS';
-  state: AutomationState;
-  processedCount: number;
-  error?: string;
-}
-
-/** 日志消息：content script → popup（用于调试） */
-export interface LogMessage {
-  type: 'LOG';
-  level: 'info' | 'warn' | 'error';
-  message: string;
-}
-
-/** 所有消息类型联合 */
+export interface CommandMessage { type: 'COMMAND'; command: 'START' | 'STOP' | 'GET_STATUS'; }
+export interface StatusMessage { type: 'STATUS'; state: AutomationState; processedCount: number; error?: string; }
+export interface LogMessage { type: 'LOG'; level: 'info' | 'warn' | 'error'; message: string; }
 export type Message = CommandMessage | StatusMessage | LogMessage;
 
-/** 常量配置 */
-export const CONFIG = {
-  /** 操作间随机等待最小毫秒数 */
-  WAIT_MIN_MS: 1000,
-  /** 操作间随机等待最大毫秒数 */
-  WAIT_MAX_MS: 3000,
-  /** 高亮持续时间（毫秒） */
-  HIGHLIGHT_DURATION_MS: 500,
-  /** 等待详情加载超时（毫秒） */
-  DETAIL_LOAD_TIMEOUT_MS: 5000,
-  /** 等待新职位加载超时（毫秒） */
-  NEW_JOB_TIMEOUT_MS: 8000,
-  /** 最大连续错误次数（超过后停止） */
-  MAX_ERROR_COUNT: 5,
-  /** MutationObserver 等待新节点超时（毫秒） */
-  MUTATION_OBSERVER_TIMEOUT_MS: 5000,
-} as const;
-
-/** 生成随机等待时间（毫秒） */
-export function randomWaitMs(): number {
-  return Math.floor(Math.random() * (CONFIG.WAIT_MAX_MS - CONFIG.WAIT_MIN_MS) + CONFIG.WAIT_MIN_MS);
+/** 速度配置 */
+export interface SpeedSettings {
+  highlightMs: number;
+  minWaitMs: number;
+  maxWaitMs: number;
+  detailTimeoutMs: number;
+  dialogCheckMs: number;
+  scrollWaitMs: number;
 }
+
+/** 速度预设 */
+export const SPEED_PRESETS: Record<string, SpeedSettings> = {
+  /** 推荐：90%+ 稳定，已是最优速度 */
+  recommend: {
+    highlightMs: 350,
+    minWaitMs: 800,
+    maxWaitMs: 1500,
+    detailTimeoutMs: 4000,
+    dialogCheckMs: 800,
+    scrollWaitMs: 2000,
+  },
+  /** 稳定：更保守，适合网络慢时 */
+  stable: {
+    highlightMs: 600,
+    minWaitMs: 1200,
+    maxWaitMs: 2500,
+    detailTimeoutMs: 6000,
+    dialogCheckMs: 1500,
+    scrollWaitMs: 3000,
+  },
+  /** 极速：最快速度，可能不稳定 */
+  turbo: {
+    highlightMs: 150,
+    minWaitMs: 400,
+    maxWaitMs: 800,
+    detailTimeoutMs: 2500,
+    dialogCheckMs: 500,
+    scrollWaitMs: 1200,
+  },
+};
+
+/** 默认使用推荐速度 */
+export let ACTIVE_SPEED: SpeedSettings = { ...SPEED_PRESETS.recommend };
+
+export function applySpeed(settings: SpeedSettings): void {
+  ACTIVE_SPEED = { ...settings };
+}
+
+export function randomWaitMs(): number {
+  const s = ACTIVE_SPEED;
+  return Math.floor(Math.random() * (s.maxWaitMs - s.minWaitMs) + s.minWaitMs);
+}
+
+/** 其他常量 */
+export const CONFIG = {
+  MAX_ERROR_COUNT: 5,
+  MUTATION_OBSERVER_TIMEOUT_MS: 6000,
+} as const;
