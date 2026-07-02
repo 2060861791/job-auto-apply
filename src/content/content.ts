@@ -1,8 +1,7 @@
 /**
- * BOSS自动投递 - Content Script v8.1
+ * BOSS自动投递 - Content Script v8.2
  *
- * 修复：面板定位/DOM结构/拖动/点击/初始化
- * 自包含单元素面板，position:fixed 直接在面板上
+ * 修复：导航回跳 + 中文状态 + 耗时预估 + 进度 x/总数
  */
 
 import {
@@ -16,6 +15,17 @@ import {
   type StatusMessage,
   type LogMessage,
 } from '../shared/types';
+
+// ============================================================
+// 中文状态映射
+// ============================================================
+const STATE_CN: Record<string, string> = {
+  IDLE: '就绪', FIND_NEXT_JOB: '查找职位', HIGHLIGHT_JOB: '高亮职位', CLICK_JOB: '点击职位',
+  WAIT_DETAIL: '等待详情', FIND_COMMUNICATE: '查找沟通', HIGHLIGHT_COMMUNICATE: '高亮沟通',
+  CLICK_COMMUNICATE: '点击沟通', CHECK_DIALOG: '检查弹窗', HIGHLIGHT_DIALOG: '高亮弹窗',
+  CLICK_DIALOG: '点击弹窗', WAIT: '等待中', STOPPED: '已停止', ERROR: '错误',
+  NO_MORE_JOBS: '全部完成',
+};
 
 // ============================================================
 // 全局
@@ -33,6 +43,7 @@ let curIdx = 0;
 let inspectOn = false;
 let cfgOpen = false;
 let folded = false;
+let userNavigated = false; // 用户手动导航后不同步 BOSS 的 active 状态
 
 // 拖动
 let drag = false, dx = 0, dy = 0, px = 0, py = 0;
@@ -40,6 +51,9 @@ let drag = false, dx = 0, dy = 0, px = 0, py = 0;
 // 投递记录
 interface Sub { time: string; title: string; company: string; location: string; tags: string; status: string; }
 const subs: Sub[] = [];
+
+// 计时
+let startTime = 0;
 
 let spd: SpeedSettings = { ...SPEED_PRESETS.recommend };
 applySpeed(spd);
@@ -55,12 +69,7 @@ function tryInit(): void {
   if (document.readyState === 'loading') { setTimeout(tryInit, 800); return; }
   const cards = getJobCards();
   if (cards.length === 0 && initTried < 6) { setTimeout(tryInit, 1000); return; }
-  try {
-    buildPanel();
-    refreshPanel();
-  } catch (e) {
-    if (initTried < 10) setTimeout(tryInit, 1500);
-  }
+  try { buildPanel(); refreshPanel(); } catch (e) { if (initTried < 10) setTimeout(tryInit, 1500); }
 }
 setTimeout(tryInit, 1000);
 window.addEventListener('load', () => setTimeout(tryInit, 1500));
@@ -72,17 +81,14 @@ chrome.runtime.onMessage.addListener((message: CommandMessage) => {
   else if (message.command === 'GET_STATUS') sendStatus(currentState);
 });
 
-// 全局拖动
 document.addEventListener('mousemove', (e) => {
   if (!drag || !pnl) return;
   const nx = Math.max(0, Math.min(px + e.clientX - dx, window.innerWidth - pnl.offsetWidth));
   const ny = Math.max(0, Math.min(py + e.clientY - dy, window.innerHeight - 60));
-  pnl.style.left = nx + 'px';
-  pnl.style.top = ny + 'px';
+  pnl.style.left = nx + 'px'; pnl.style.top = ny + 'px';
 });
 document.addEventListener('mouseup', () => { drag = false; });
 
-// 点击检测
 document.addEventListener('click', (e) => {
   if (!inspectOn) return;
   e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
@@ -90,7 +96,7 @@ document.addEventListener('click', (e) => {
 }, true);
 
 // ============================================================
-// 面板 HTML
+// CSS & HTML
 // ============================================================
 
 const CSS = `
@@ -101,10 +107,10 @@ const CSS = `
 #_b_ ._h button{width:26px;height:26px;border-radius:6px;border:none;background:transparent;color:#a6adc8;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
 #_b_ ._h button:hover{background:#3a3a55;color:#fff;}
 #_b_ ._s{display:flex;border-bottom:1px solid #2a2a44;flex-shrink:0;}
-#_b_ ._si{flex:1;text-align:center;padding:10px 4px;border-right:1px solid #2a2a44;}
+#_b_ ._si{flex:1;text-align:center;padding:8px 2px;border-right:1px solid #2a2a44;}
 #_b_ ._si:last-child{border-right:none;}
-#_b_ ._sv{font-size:18px;font-weight:700;}
-#_b_ ._sl{font-size:10px;color:#78789e;margin-top:2px;}
+#_b_ ._sv{font-size:16px;font-weight:700;}
+#_b_ ._sl{font-size:9px;color:#78789e;margin-top:1px;}
 #_b_ ._bt{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #2a2a44;flex-shrink:0;}
 #_b_ ._bt button{flex:1;padding:7px 0;border:1px solid #3a3a55;border-radius:7px;background:#22223a;color:#cdd6f4;font-size:11px;cursor:pointer;}
 #_b_ ._bt button:hover{background:#2d2d48;}
@@ -119,7 +125,7 @@ const CSS = `
 #_b_ ._cgp button{flex:1;padding:6px 0;border-radius:6px;border:1px solid #3a3a55;background:#22223a;color:#cdd6f4;font-size:11px;cursor:pointer;}
 #_b_ ._cgp button:hover{background:#2d2d48;}
 #_b_ ._cgp ._on{border-color:#89b4fa;color:#89b4fa;font-weight:600;}
-#_b_ ._out{flex:1;overflow-y:auto;padding:10px 14px;font-size:11px;line-height:1.65;color:#b4b8d0;min-height:60px;max-height:280px;}
+#_b_ ._out{flex:1;overflow-y:auto;padding:10px 14px;font-size:11px;line-height:1.6;color:#b4b8d0;min-height:60px;max-height:260px;}
 #_b_ ._out b{color:#e2a4f5;}
 #_b_ ._out ._d{color:#585b70;}
 #_b_ ._out ._g{color:#a6e3a1;}
@@ -127,10 +133,10 @@ const CSS = `
 #_b_ ._out ._r{color:#f38ba8;}
 #_b_ ._out::-webkit-scrollbar{width:4px;}
 #_b_ ._out::-webkit-scrollbar-thumb{background:#3a3a55;border-radius:2px;}
-#_b_ ._na{background:#89b4fa!important;color:#1a1a2e!important;border-color:#89b4fa!important;font-weight:600;}
-#_b_ ._nn{background:#a6e3a1!important;color:#1a1a2e!important;border-color:#a6e3a1!important;font-weight:600;}
-#_b_ ._nd{background:#f38ba8!important;color:#1a1a2e!important;border-color:#f38ba8!important;}
-#_b_ ._nx{background:#a6e3a1!important;color:#1a1a2e!important;border-color:#a6e3a1!important;font-weight:700;}
+._na{background:#89b4fa!important;color:#1a1a2e!important;border-color:#89b4fa!important;font-weight:600;}
+._nn{background:#a6e3a1!important;color:#1a1a2e!important;border-color:#a6e3a1!important;font-weight:600;}
+._nd{background:#f38ba8!important;color:#1a1a2e!important;border-color:#f38ba8!important;}
+._nx{background:#a6e3a1!important;color:#1a1a2e!important;border-color:#a6e3a1!important;font-weight:700;}
 `;
 
 const HTML = `
@@ -141,9 +147,9 @@ const HTML = `
   <button id="__fold__" title="折叠">─</button>
 </div>
 <div class="_s" id="__stats__">
-  <div class="_si"><div class="_sv" style="color:#a6e3a1" id="__cnt__">-</div><div class="_sl">检测到</div></div>
-  <div class="_si"><div class="_sv" style="color:#f5c2e7" id="__sent__">0</div><div class="_sl">已投递</div></div>
-  <div class="_si"><div class="_sv" style="color:#f9e2af" id="__idx__">-</div><div class="_sl">当前</div></div>
+  <div class="_si"><div class="_sv" style="color:#a6e3a1" id="__cnt__">-</div><div class="_sl">进度</div></div>
+  <div class="_si"><div class="_sv" style="color:#f5c2e7" id="__sent__">0</div><div class="_sl">已投</div></div>
+  <div class="_si"><div class="_sv" style="color:#89b4fa" id="__eta__">-</div><div class="_sl">预计剩余</div></div>
   <div class="_si"><div class="_sv" style="color:#f38ba8;font-size:11px" id="__st__">就绪</div><div class="_sl">状态</div></div>
 </div>
 <div class="_bt" id="__nav__">
@@ -168,28 +174,23 @@ const HTML = `
 
 function buildPanel(): void {
   if (document.getElementById('_b_')) return;
-
   const el = document.createElement('div');
   el.id = '_b_';
   el.innerHTML = `<style>${CSS}</style>${HTML}`;
   document.body.appendChild(el);
   pnl = el;
 
-  // 拖动
   const hdr = $('__h__');
   hdr.addEventListener('mousedown', (e) => {
     const me = e as MouseEvent;
     if ((me.target as HTMLElement).tagName === 'BUTTON') return;
-    drag = true;
-    dx = me.clientX; dy = me.clientY;
+    drag = true; dx = me.clientX; dy = me.clientY;
     const r = pnl!.getBoundingClientRect();
-    px = r.left; py = r.top;
-    pnl!.style.transition = 'none';
+    px = r.left; py = r.top; pnl!.style.transition = 'none';
   });
 
-  // 按钮
-  click('__prev__', () => navPanel(-1));
-  click('__next__', () => navPanel(1));
+  click('__prev__', () => { userNavigated = true; navPanel(-1); });
+  click('__next__', () => { userNavigated = true; navPanel(1); });
   click('__insp__', () => {
     inspectOn = !inspectOn;
     const b = $<HTMLButtonElement>('__insp__');
@@ -201,13 +202,10 @@ function buildPanel(): void {
   click('__cfg__', () => { cfgOpen = !cfgOpen; $('__cfgpnl__').classList.toggle('on', cfgOpen); });
   click('__fold__', () => {
     folded = !folded;
-    ['__stats__','__nav__','__cfgpnl__','__out__'].forEach(id => {
-      $(id).style.display = folded ? 'none' : '';
-    });
+    ['__stats__','__nav__','__cfgpnl__','__out__'].forEach(id => { $(id).style.display = folded ? 'none' : ''; });
     $<HTMLButtonElement>('__fold__').textContent = folded ? '□' : '─';
   });
 
-  // 速度滑条
   slider('__hl__', '__hlv__', 'highlightMs');
   slider('__minw__', '__minwv__', 'minWaitMs');
   slider('__maxw__', '__maxwv__', 'maxWaitMs');
@@ -227,17 +225,33 @@ function buildPanel(): void {
 function refreshPanel(): void {
   jobItems = getJobCards();
   const ai = findActiveIdx(jobItems);
-  if (ai >= 0) curIdx = ai;
 
-  setText('__cnt__', String(jobItems.length));
-  setText('__sent__', String(subs.length));
-  setText('__idx__', jobItems.length > 0 ? String(curIdx + 1) : '-');
-  setText('__st__', currentState);
+  // 只在非用户手动导航时同步 BOSS 的 active 状态
+  if (!userNavigated && ai >= 0) curIdx = ai;
+
+  const total = jobItems.length;
+  const done = subs.length;
+  const remain = total - done;
+
+  setText('__cnt__', `${done}/${total}`);
+  setText('__sent__', String(done));
+  setText('__st__', STATE_CN[currentState] || currentState);
+
+  // 计算 ETA
+  if (startTime > 0 && done > 0) {
+    const elapsed = Date.now() - startTime;
+    const avg = elapsed / done;
+    const etaMs = avg * remain;
+    setText('__eta__', formatDuration(etaMs));
+  } else {
+    setText('__eta__', '-');
+  }
 
   const L: string[] = [];
-  L.push(`📋 <b>${jobItems.length}</b> 个职位 | 已投递 <b class="_r">${subs.length}</b> | ${currentState}`);
+  L.push(`📋 <b>${total}</b> 个职位 | 已投 <b class="_r">${done}</b> | 剩余 <b>${remain}</b> | ${STATE_CN[currentState] || currentState}`);
   L.push('');
-  if (jobItems.length > 0) {
+
+  if (total > 0) {
     jobItems.forEach((card, i) => {
       const title = txt(card, 'a.job-name').substring(0, 22);
       const comp = txt(card, 'span.boss-name').substring(0, 10);
@@ -251,30 +265,28 @@ function refreshPanel(): void {
       ].filter(Boolean).join('');
       L.push(`  ${icons} [${i}] <b>${esc(title)}</b> | ${esc(comp)} <span class="_d">${esc(tags)}</span>`);
     });
-    hlCard(curIdx);
+    if (!userNavigated || curIdx < total) hlCard(curIdx);
   } else {
-    L.push('⚠ 未检测到职位 — 请确保在搜索结果页');
+    L.push('⚠ 未检测到职位');
   }
+
   out(L.join('\n'));
 }
 
 function navPanel(delta: number): void {
-  if (jobItems.length === 0) { out('⚠ 未检测到职位，请先滚动列表加载'); refreshPanel(); return; }
+  if (jobItems.length === 0) { out('⚠ 未检测到职位'); refreshPanel(); return; }
   const ni = curIdx + delta;
-  if (ni < 0) { out('⚠ 已是第一个职位'); return; }
-  if (ni >= jobItems.length) { out('⚠ 已是最后一个职位，如需更多请手动滚动加载'); return; }
+  if (ni < 0) { out('⚠ 已是第一个'); return; }
+  if (ni >= jobItems.length) { out('⚠ 已是最后一个'); return; }
   curIdx = ni;
-  // 清除所有高亮
+  // 立即高亮
   jobItems.forEach(e => { e.style.outline = ''; e.style.boxShadow = ''; });
-  // 高亮新目标
   const card = jobItems[curIdx];
   card.scrollIntoView({ behavior: 'smooth', block: 'center' });
   card.style.outline = '3px solid #f5c2e7';
   card.style.boxShadow = '0 0 20px 4px rgba(245,194,231,0.5)';
-  setText('__idx__', String(curIdx + 1));
+  setText('__cnt__', `${subs.length}/${jobItems.length}`);
   out(`📍 [${curIdx + 1}/${jobItems.length}] <b>${esc(txt(card, 'a.job-name'))}</b>\n${esc(txt(card, 'span.boss-name'))} | ${esc(txt(card, 'span.company-location'))}`);
-  // 异步刷新列表视图
-  setTimeout(refreshPanel, 150);
 }
 
 function hlCard(idx: number): void {
@@ -284,7 +296,19 @@ function hlCard(idx: number): void {
   card.scrollIntoView({ behavior: 'smooth', block: 'center' });
   card.style.outline = '3px solid #f5c2e7';
   card.style.boxShadow = '0 0 20px 4px rgba(245,194,231,0.5)';
-  out(`📍 [${idx + 1}/${jobItems.length}] <b>${esc(txt(card, 'a.job-name'))}</b>\n公司: ${esc(txt(card, 'span.boss-name'))} | ${esc(txt(card, 'span.company-location'))}\n要求: ${esc(txt(card, 'ul.tag-list'))}`);
+}
+
+// ============================================================
+// 时间格式化
+// ============================================================
+
+function formatDuration(ms: number): string {
+  if (ms <= 0) return '0秒';
+  const totalSec = Math.ceil(ms / 1000);
+  if (totalSec < 60) return totalSec + '秒';
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return s > 0 ? `${m}分${s}秒` : `${m}分钟`;
 }
 
 // ============================================================
@@ -326,6 +350,8 @@ function preset(name: string): void {
 function start(): void {
   if (![AutomationState.IDLE, AutomationState.STOPPED, AutomationState.NO_MORE_JOBS].includes(currentState)) return;
   stopped = false; lastClickedJobText = ''; processedCount = 0; consecutiveErrors = 0;
+  userNavigated = false;
+  startTime = Date.now();
   setText('__badge__', '运行中');
   refreshPanel();
   go(AutomationState.FIND_COMMUNICATE, 500);
@@ -337,6 +363,7 @@ function stop(): void {
   currentState = AutomationState.STOPPED;
   sendStatus(AutomationState.STOPPED);
   setText('__badge__', '已停止');
+  setText('__st__', STATE_CN.STOPPED);
   out('⏹ 已停止');
 }
 
@@ -350,18 +377,18 @@ async function step(state: AutomationState): Promise<void> {
   if (stopped) { currentState = AutomationState.STOPPED; sendStatus(AutomationState.STOPPED); return; }
   currentState = state;
   sendStatus(state);
-  setText('__st__', state);
+  setText('__st__', STATE_CN[state] || state);
   setText('__badge__', '运行中');
   try {
     let next: AutomationState;
     switch (state) {
       case AutomationState.IDLE: next = AutomationState.IDLE; break;
       case AutomationState.STOPPED: next = AutomationState.IDLE; break;
-      case AutomationState.NO_MORE_JOBS: {
+      case AutomationState.NO_MORE_JOBS:
         setText('__badge__', '完成');
+        setText('__st__', STATE_CN.NO_MORE_JOBS);
         out(`✅ 全部完成！共投递 <b>${subs.length}</b> 个职位`);
         next = AutomationState.NO_MORE_JOBS; break;
-      }
       case AutomationState.ERROR:
         consecutiveErrors++;
         next = consecutiveErrors >= CONFIG.MAX_ERROR_COUNT ? AutomationState.STOPPED : AutomationState.WAIT; break;
@@ -483,6 +510,13 @@ function recordSub(status: string): void {
   if (card) {
     subs.push({ time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), title: txt(card, 'a.job-name'), company: txt(card, 'span.boss-name'), location: txt(card, 'span.company-location'), tags: txt(card, 'ul.tag-list'), status });
     setText('__sent__', String(subs.length));
+    setText('__cnt__', `${subs.length}/${jobItems.length}`);
+    // 更新 ETA
+    if (startTime > 0 && subs.length > 0) {
+      const avg = (Date.now() - startTime) / subs.length;
+      const remain = jobItems.length - subs.length;
+      setText('__eta__', formatDuration(avg * Math.max(0, remain)));
+    }
   }
 }
 
@@ -504,13 +538,11 @@ function doExport(): void {
 // ============================================================
 
 function doInspect(el: HTMLElement): void {
-  const L: string[] = [];
-  L.push('══════════ 🔍 ══════════');
+  const L: string[] = ['══════════ 🔍 ══════════'];
   L.push(`Tag: <b>${esc(el.tagName.toLowerCase())}</b>`);
   L.push(`Class: ${esc(el.className || '(无)')}`);
   const r = el.getBoundingClientRect();
   L.push(`Rect: (${R(r.left)},${R(r.top)}) ${R(r.width)}×${R(r.height)}`);
-  L.push(`CSS: <code>${esc(cssPath(el))}</code>`);
   L.push(`Text: ${esc((el.textContent || '').trim().substring(0, 100))}`);
   L.push('── 祖先 ──');
   let cur: HTMLElement | null = el;
@@ -551,28 +583,11 @@ function waitFor<T>(fn: () => T | null, ms: number): Promise<T | null> {
   return new Promise(r => { const t0 = Date.now(); const c = () => { const v = fn(); if (v) r(v); else if (Date.now() - t0 >= ms) r(null); else setTimeout(c, 300); }; c(); });
 }
 
-function cssPath(el: HTMLElement): string {
-  const p: string[] = [];
-  let c: HTMLElement | null = el;
-  while (c && c !== document.body && c !== document.documentElement) {
-    let s = c.tagName.toLowerCase();
-    if (c.id) { p.unshift('#' + c.id); break; }
-    if (c.className && typeof c.className === 'string') {
-      const cls = c.className.trim().split(/\s+/).filter(x => x && !x.includes(':')).slice(0, 2);
-      if (cls.length) s += '.' + cls.join('.');
-    }
-    const par = c.parentElement;
-    if (par) { const sibs = Array.from(par.children).filter(x => x.tagName === c!.tagName); if (sibs.length > 1) s += `:nth-of-type(${sibs.indexOf(c) + 1})`; }
-    p.unshift(s); c = par;
-  }
-  return p.join(' > ');
-}
-
 function txt(el: HTMLElement, sel: string): string { const e = el.querySelector(sel); return e ? (e.textContent || '').trim() : ''; }
 function sleep(ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)); }
 
 // ============================================================
-// 微型工具
+// 工具
 // ============================================================
 
 function $<T extends HTMLElement = HTMLElement>(id: string): T { return document.getElementById(id) as T; }
@@ -583,7 +598,9 @@ function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, 
 function R(n: number): string { return Math.round(n).toString(); }
 
 function sendStatus(state: AutomationState): void {
-  setText('__st__', state); setText('__sent__', String(subs.length));
+  setText('__st__', STATE_CN[state] || state);
+  setText('__sent__', String(subs.length));
+  setText('__cnt__', `${subs.length}/${jobItems.length}`);
   chrome.runtime.sendMessage({ type: 'STATUS', state, processedCount } satisfies StatusMessage).catch(() => {});
 }
 

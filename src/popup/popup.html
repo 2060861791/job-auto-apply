@@ -1,21 +1,17 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BOSS自动投递</title>
-<link rel="stylesheet" href="popup.css">
-</head>
+<head><meta charset="UTF-8"><title>BOSS自动投递</title><link rel="stylesheet" href="popup.css"></head>
 <body>
 <div class="c">
   <div class="h">BOSS 自动投递</div>
   <div class="s">
     <div class="r"><span>状态</span><span id="st">就绪</span></div>
-    <div class="r"><span>已投递</span><span id="ct">0</span></div>
+    <div class="r"><span>进度</span><span id="ct">0/0</span></div>
+    <div class="r"><span>预计剩余</span><span id="eta">-</span></div>
   </div>
   <button id="go" class="b b1">开 始</button>
   <button id="sp" class="b b2 hidden">停 止</button>
-  <p class="tip">打开 zhipin.com 搜索结果页后点击开始<br>详细状态查看页面右侧浮动面板</p>
+  <p class="tip">详细状态查看页面右侧浮动面板</p>
 </div>
 <script src="popup.js"></script>
 </body>
