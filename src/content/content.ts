@@ -41,7 +41,12 @@ let transitionTimerId: ReturnType<typeof setTimeout> | null = null;
 let pnl: HTMLElement | null = null;
 let jobItems: HTMLElement[] = [];
 let curIdx = 0;
-let inspectOn = false, cfgOpen = false, folded = false, userNav = false;
+let inspectOn = false, cfgOpen = false, folded = false, userNav = false, blockOn = false;
+
+// 关键词屏蔽
+let blockKeywords: string[] = [];
+let skippedCount = 0;
+const skippedTexts = new Set<string>();
 
 // 拖动
 let drag = false, dx = 0, dy = 0, px = 0, py = 0;
@@ -139,6 +144,14 @@ const CSS = `
 ._nn{background:#a6e3a1!important;color:#1a1a2e!important;border-color:#a6e3a1!important;font-weight:600;}
 ._nd{background:#f38ba8!important;color:#1a1a2e!important;border-color:#f38ba8!important;}
 ._nx{background:#a6e3a1!important;color:#1a1a2e!important;border-color:#a6e3a1!important;font-weight:700;}
+	._bk{display:none;padding:8px 12px;border-bottom:1px solid #2a2a44;background:#1e1e34;flex-shrink:0;}
+	._bk.on{display:flex;flex-direction:column;gap:6px;}
+	._bk input{flex:1;padding:6px 10px;border:1px solid #3a3a55;border-radius:6px;background:#22223a;color:#cdd6f4;font-size:11px;outline:none;}
+	._bk input:focus{border-color:#89b4fa;}
+	._bk ._kw{display:flex;flex-wrap:wrap;gap:4px;}
+	._bk ._kt{font-size:10px;background:#f38ba8;color:#1a1a2e;padding:2px 8px;border-radius:10px;cursor:pointer;}
+	._bk ._kt:hover{background:#e06c75;}
+	._bk ._kh{font-size:10px;color:#78789e;}
 `;
 
 const HTML = `
@@ -164,7 +177,11 @@ const HTML = `
   <button id="__refresh__">🔄 刷新</button>
   <button class="_nx" id="__export__">📥 导出</button>
 </div>
-<div class="_cfg" id="__cfgpnl__">
+<div class="_bk" id="__blkpnl__">
+	  <input type="text" id="__blkin__" placeholder="输入关键词，逗号分隔，如：Unity3D,U3D,Java">
+	  <div class="_kw" id="__blktags__"><span class="_kh">屏蔽词（点击标签删除）</span></div>
+	</div>
+	<div class="_cfg" id="__cfgpnl__">
   <div class="_cgt">⚙ 速度设置 (<span id="__spdlbl__">推荐</span>)</div>
   <div class="_cgr"><label>高亮</label><input type="range" id="__hl__" min="100" max="2000" step="50"><span id="__hlv__">350ms</span></div>
   <div class="_cgr"><label>步间最小</label><input type="range" id="__minw__" min="200" max="3000" step="100"><span id="__minwv__">800ms</span></div>
@@ -209,10 +226,23 @@ function buildPanel(): void {
     if (inspectOn) out('✅ 点击检测 ON');
   });
   click('__export__', doExport);
+  click('__block__', () => {
+    blockOn = !blockOn;
+    const b = $<HTMLButtonElement>('__block__');
+    b.textContent = blockOn ? '🚫 ON' : '🚫 OFF';
+    b.className = blockOn ? '_nd' : '';
+    $('__blkpnl__').classList.toggle('on', blockOn);
+    if (blockOn) { applyBlockKeywords(); refreshPanel(); }
+    else { blockKeywords = []; skippedCount = 0; skippedTexts.clear(); refreshBlockTags(); refreshPanel(); }
+  });
+  $<HTMLInputElement>('__blkin__').addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Enter') { e.preventDefault(); applyBlockKeywords(); refreshPanel(); }
+  });
+  $<HTMLInputElement>('__blkin__').addEventListener('blur', () => { applyBlockKeywords(); refreshPanel(); });
   click('__cfg__', () => { cfgOpen = !cfgOpen; $('__cfgpnl__').classList.toggle('on', cfgOpen); });
   click('__fold__', () => {
     folded = !folded;
-    ['__stats__','__nav__','__ctrl__','__cfgpnl__','__out__'].forEach(id => {
+    ['__stats__','__nav__','__ctrl__','__blkpnl__','__cfgpnl__','__out__'].forEach(id => {
       const el2 = document.getElementById(id); if (el2) el2.style.display = folded ? 'none' : '';
     });
     $<HTMLButtonElement>('__fold__').textContent = folded ? '□' : '─';
@@ -247,7 +277,8 @@ function refreshPanel(): void {
   setText('__st__', SCN[currentState] || currentState);
 
   const L: string[] = [];
-  L.push(`📋 <b>${total}</b> 个职位 | 已投 <b class="_r">${done}</b> | 剩余 <b>${Math.max(0, total - done)}</b> | ${SCN[currentState] || currentState}`);
+  const blkTxt = blockOn && skippedCount > 0 ? ` | 🚫屏蔽 <b class="_y">${skippedCount}</b>` : '';
+  L.push(`📋 <b>${total}</b> 个职位 | 已投 <b class="_r">${done}</b> | 剩余 <b>${Math.max(0, total - done)}</b>${blkTxt} | ${SCN[currentState] || currentState}`);
   L.push('');
 
   if (total > 0) {
@@ -257,10 +288,12 @@ function refreshPanel(): void {
       const tags = txt(card, 'ul.tag-list');
       const active = !!card.querySelector('.job-card-wrap.active');
       const sub = subs.some(j => j.title.includes(title) || title.includes(j.title));
+      const blocked = isBlocked(card);
       const icons = [
         active ? '<span class="_g">✅</span>' : '⬜',
         i === curIdx ? '<span class="_y">◀</span>' : '',
         sub ? '<span class="_r">📤</span>' : '',
+        blocked ? '<span class="_r">🚫</span>' : '',
       ].filter(Boolean).join('');
       L.push(`  ${icons} [${i}] <b>${esc(title)}</b> | ${esc(comp)} <span class="_d">${esc(tags)}</span>`);
     });
@@ -293,6 +326,44 @@ function hlCard(idx: number): void {
   card.scrollIntoView({ behavior: 'smooth', block: 'center' });
   card.style.outline = '3px solid #f5c2e7';
   card.style.boxShadow = '0 0 20px 4px rgba(245,194,231,0.5)';
+}
+
+// ============================================================
+// 关键词屏蔽
+// ============================================================
+
+function applyBlockKeywords(): void {
+  const raw = $<HTMLInputElement>('__blkin__').value.trim();
+  blockKeywords = raw ? raw.split(/[,，\s]+/).filter(Boolean).map(k => k.toLowerCase()) : [];
+  refreshBlockTags();
+}
+
+function refreshBlockTags(): void {
+  const container = $('__blktags__');
+  if (!container) return;
+  if (blockKeywords.length === 0) {
+    container.innerHTML = '<span class="_kh">屏蔽词（输入后按回车）</span>';
+  } else {
+    container.innerHTML = blockKeywords.map(k =>
+      `<span class="_kt" data-kw="${esc(k)}" title="点击删除">🚫 ${esc(k)}</span>`
+    ).join(' ');
+    // 点击标签删除
+    container.querySelectorAll('._kt').forEach(el => {
+      el.addEventListener('click', () => {
+        const kw = el.getAttribute('data-kw') || '';
+        blockKeywords = blockKeywords.filter(k => k !== kw);
+        $<HTMLInputElement>('__blkin__').value = blockKeywords.join(',');
+        refreshBlockTags();
+        refreshPanel();
+      });
+    });
+  }
+}
+
+function isBlocked(card: HTMLElement): boolean {
+  if (!blockOn || blockKeywords.length === 0) return false;
+  const title = txt(card, 'a.job-name').toLowerCase();
+  return blockKeywords.some(kw => title.includes(kw));
 }
 
 // ============================================================
@@ -366,6 +437,7 @@ function start(): void {
   if (!IDLE_SET.has(currentState)) return;
   stopped = false; lastClickedJobText = ''; processedCount = 0; consecutiveErrors = 0;
   userNav = false;
+  skippedCount = 0; skippedTexts.clear();
   startTime = Date.now();
   stopEtaCountdown();
   setText('__badge__', '运行中');
@@ -468,6 +540,16 @@ async function step(state: AutomationState): Promise<void> {
       case AutomationState.HIGHLIGHT_JOB: {
         const tgt = getTargetCard();
         if (!tgt) { lastClickedJobText = ''; next = AutomationState.FIND_NEXT_JOB; break; }
+        // 关键词屏蔽：跳过匹配的职位
+        if (isBlocked(tgt)) {
+          const btitle = txt(tgt, 'a.job-name');
+          if (!skippedTexts.has(btitle)) {
+            skippedTexts.add(btitle); skippedCount++;
+            out(`🚫 屏蔽跳过：<b>${esc(btitle)}</b> <span class="_r">（已跳过${skippedCount}）</span>`);
+          }
+          lastClickedJobText = (tgt.textContent || '').trim().substring(0, 60);
+          next = AutomationState.FIND_NEXT_JOB; break;
+        }
         tgt.scrollIntoView({ behavior: 'smooth', block: 'center' }); hlEl(tgt);
         next = AutomationState.CLICK_JOB; break;
       }
