@@ -175,6 +175,7 @@ const HTML = `
   <button class="_nn" id="__next__" style="flex:.6;font-size:16px;">▶</button>
   <button id="__insp__">🎯 OFF</button>
   <button id="__refresh__">🔄 刷新</button>
+	  <button id="__block__">🚫 OFF</button>
   <button class="_nx" id="__export__">📥 导出</button>
 </div>
 <div class="_bk" id="__blkpnl__">
@@ -226,19 +227,23 @@ function buildPanel(): void {
     if (inspectOn) out('✅ 点击检测 ON');
   });
   click('__export__', doExport);
-  click('__block__', () => {
-    blockOn = !blockOn;
-    const b = $<HTMLButtonElement>('__block__');
-    b.textContent = blockOn ? '🚫 ON' : '🚫 OFF';
-    b.className = blockOn ? '_nd' : '';
-    $('__blkpnl__').classList.toggle('on', blockOn);
-    if (blockOn) { applyBlockKeywords(); refreshPanel(); }
-    else { blockKeywords = []; skippedCount = 0; skippedTexts.clear(); refreshBlockTags(); refreshPanel(); }
-  });
-  $<HTMLInputElement>('__blkin__').addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.key === 'Enter') { e.preventDefault(); applyBlockKeywords(); refreshPanel(); }
-  });
-  $<HTMLInputElement>('__blkin__').addEventListener('blur', () => { applyBlockKeywords(); refreshPanel(); });
+  // block 相关（包 try-catch 防加载卡死）
+  try {
+    click('__block__', () => {
+      blockOn = !blockOn;
+      const b = $<HTMLButtonElement>('__block__');
+      b.textContent = blockOn ? '🚫 ON' : '🚫 OFF';
+      b.className = blockOn ? '_nd' : '';
+      $('__blkpnl__').classList.toggle('on', blockOn);
+      if (blockOn) { applyBlockKeywords(); refreshPanel(); }
+      else { blockKeywords = []; skippedCount = 0; skippedTexts.clear(); refreshBlockTags(); refreshPanel(); }
+    });
+    const blkIn = $<HTMLInputElement>('__blkin__');
+    if (blkIn) {
+      // 输入即生效，无需等回车或失焦
+      blkIn.addEventListener('input', () => { applyBlockKeywords(); refreshPanel(); });
+    }
+  } catch { /* 面板主功能不受影响 */ }
   click('__cfg__', () => { cfgOpen = !cfgOpen; $('__cfgpnl__').classList.toggle('on', cfgOpen); });
   click('__fold__', () => {
     folded = !folded;
@@ -265,7 +270,11 @@ function buildPanel(): void {
 // ============================================================
 
 function refreshPanel(): void {
-  jobItems = getJobCards();
+  const allCards = getJobCards();
+  // 屏蔽模式下过滤掉匹配的职位，列表里不显示
+  jobItems = (blockOn && blockKeywords.length > 0)
+    ? allCards.filter(c => !isBlocked(c))
+    : allCards;
   const ai = findActiveIdx(jobItems);
   if (!userNav && ai >= 0) curIdx = ai;
 
@@ -277,7 +286,7 @@ function refreshPanel(): void {
   setText('__st__', SCN[currentState] || currentState);
 
   const L: string[] = [];
-  const blkTxt = blockOn && skippedCount > 0 ? ` | 🚫屏蔽 <b class="_y">${skippedCount}</b>` : '';
+  const blkTxt = blockOn ? ` | 🚫屏蔽 <b class="_y">${blockKeywords.length > 0 ? blockKeywords.join(',') : '关'}</b>` : '';
   L.push(`📋 <b>${total}</b> 个职位 | 已投 <b class="_r">${done}</b> | 剩余 <b>${Math.max(0, total - done)}</b>${blkTxt} | ${SCN[currentState] || currentState}`);
   L.push('');
 
@@ -288,12 +297,10 @@ function refreshPanel(): void {
       const tags = txt(card, 'ul.tag-list');
       const active = !!card.querySelector('.job-card-wrap.active');
       const sub = subs.some(j => j.title.includes(title) || title.includes(j.title));
-      const blocked = isBlocked(card);
       const icons = [
         active ? '<span class="_g">✅</span>' : '⬜',
         i === curIdx ? '<span class="_y">◀</span>' : '',
         sub ? '<span class="_r">📤</span>' : '',
-        blocked ? '<span class="_r">🚫</span>' : '',
       ].filter(Boolean).join('');
       L.push(`  ${icons} [${i}] <b>${esc(title)}</b> | ${esc(comp)} <span class="_d">${esc(tags)}</span>`);
     });
@@ -453,7 +460,7 @@ function start(): void {
   btn.textContent = '⏹ 停 止';
   btn.className = '_sp';
   refreshPanel();
-  go(AutomationState.FIND_COMMUNICATE, 500);
+  go(AutomationState.FIND_NEXT_JOB, 500);
 }
 
 function stop(): void {
@@ -497,6 +504,16 @@ async function step(state: AutomationState): Promise<void> {
         consecutiveErrors++;
         next = consecutiveErrors >= CONFIG.MAX_ERROR_COUNT ? AutomationState.STOPPED : AutomationState.WAIT; break;
       case AutomationState.FIND_COMMUNICATE:
+        // 安全检查：当前选中的职位如果是屏蔽的，跳过
+        if (blockOn && blockKeywords.length > 0) {
+          const cards = getJobCards();
+          const ai = findActiveIdx(cards);
+          if (ai >= 0 && isBlocked(cards[ai])) {
+            out(`🚫 屏蔽跳过「立即沟通」: <b>${esc(txt(cards[ai], 'a.job-name'))}</b>`);
+            lastClickedJobText = (cards[ai].textContent || '').trim().substring(0, 60);
+            next = AutomationState.FIND_NEXT_JOB; break;
+          }
+        }
         next = findBtn('立即沟通') ? AutomationState.HIGHLIGHT_COMMUNICATE : AutomationState.FIND_NEXT_JOB; break;
       case AutomationState.HIGHLIGHT_COMMUNICATE: {
         const b = findBtn('立即沟通');
@@ -539,17 +556,7 @@ async function step(state: AutomationState): Promise<void> {
       }
       case AutomationState.HIGHLIGHT_JOB: {
         const tgt = getTargetCard();
-        if (!tgt) { lastClickedJobText = ''; next = AutomationState.FIND_NEXT_JOB; break; }
-        // 关键词屏蔽：跳过匹配的职位
-        if (isBlocked(tgt)) {
-          const btitle = txt(tgt, 'a.job-name');
-          if (!skippedTexts.has(btitle)) {
-            skippedTexts.add(btitle); skippedCount++;
-            out(`🚫 屏蔽跳过：<b>${esc(btitle)}</b> <span class="_r">（已跳过${skippedCount}）</span>`);
-          }
-          lastClickedJobText = (tgt.textContent || '').trim().substring(0, 60);
-          next = AutomationState.FIND_NEXT_JOB; break;
-        }
+        if (!tgt) { out('⚠ 全部职位被屏蔽或无更多职位'); stop(); next = AutomationState.NO_MORE_JOBS; break; }
         tgt.scrollIntoView({ behavior: 'smooth', block: 'center' }); hlEl(tgt);
         next = AutomationState.CLICK_JOB; break;
       }
@@ -606,9 +613,16 @@ function getTargetCard(): HTMLElement | null {
   const cards = getJobCards();
   if (cards.length === 0) return null;
   const ai = findActiveIdx(cards);
-  if (ai >= 0 && ai < cards.length - 1) return cards[ai + 1];
-  if (lastClickedJobText) { const i = findJobByText(cards, lastClickedJobText); if (i >= 0 && i < cards.length - 1) return cards[i + 1]; }
-  return cards[0];
+  let startIdx: number;
+  if (ai >= 0 && ai < cards.length - 1) startIdx = ai + 1;
+  else if (lastClickedJobText) { const i = findJobByText(cards, lastClickedJobText); startIdx = i >= 0 && i < cards.length - 1 ? i + 1 : 0; }
+  else startIdx = 0;
+  // 跳过屏蔽的职位
+  for (let j = 0; j < cards.length; j++) {
+    const idx = (startIdx + j) % cards.length;
+    if (!isBlocked(cards[idx])) return cards[idx];
+  }
+  return null; // 全部被屏蔽
 }
 
 // ============================================================
