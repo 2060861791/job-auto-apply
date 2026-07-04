@@ -3,7 +3,7 @@
   "name": "BOSS直聘自动投递",
   "version": "1.0.0",
   "description": "自动循环点击BOSS直聘职位列表中的「立即沟通」按钮",
-  "permissions": ["tabs"],
+  "permissions": ["tabs", "storage"],
   "host_permissions": ["https://www.zhipin.com/*"],
   "action": {
     "default_popup": "popup.html",

@@ -62,19 +62,75 @@ let etaTimer: ReturnType<typeof setInterval> | null = null;
 
 let spd: SpeedSettings = { ...SPEED_PRESETS.recommend };
 applySpeed(spd);
+let speedPreset = 'recommend';
+
+// ============================================================
+// 持久化 (chrome.storage.local)
+// ============================================================
+
+async function saveSettings(): Promise<void> {
+  try {
+    await chrome.storage.local.set({
+      speed: spd,
+      speedPreset,
+      blockKeywords,
+      blockOn,
+    });
+  } catch { /* */ }
+}
+
+async function loadSettings(): Promise<void> {
+  try {
+    const r = await chrome.storage.local.get(['speed', 'speedPreset', 'blockKeywords', 'blockOn', 'panelVisible']);
+    if (r.speed) { spd = r.speed; applySpeed(spd); }
+    if (r.speedPreset) speedPreset = r.speedPreset;
+    if (r.blockKeywords) { blockKeywords = r.blockKeywords; blockOn = r.blockOn === true; }
+    // 面板显隐
+    if (r.panelVisible === false && pnl) {
+      pnl.style.display = 'none';
+    }
+  } catch { /* */ }
+}
 
 // ============================================================
 // 初始化
 // ============================================================
 
+let panelVisible = true;
 let initTried = 0;
+
+// 先从存储加载设置
+loadSettings().then(() => {
+  // 面板可见性
+  chrome.storage.local.get('panelVisible').then(r => {
+    if (r.panelVisible === false) panelVisible = false;
+  });
+});
+
 function tryInit(): void {
   initTried++;
   if (pnl) return;
   if (document.readyState === 'loading') { setTimeout(tryInit, 800); return; }
   const cards = getJobCards();
   if (cards.length === 0 && initTried < 6) { setTimeout(tryInit, 1000); return; }
-  try { buildPanel(); refreshPanel(); } catch (e) { if (initTried < 10) setTimeout(tryInit, 1500); }
+  try {
+    buildPanel();
+    syncSlidersUI();
+    // 恢复持久化的预设按钮高亮
+    if (speedPreset) {
+      ['__pre_s__','__pre_r__','__pre_t__'].forEach(id => $(id).classList.remove('_on'));
+      const map: Record<string, string> = { stable: '__pre_s__', recommend: '__pre_r__', turbo: '__pre_t__' };
+      const labels: Record<string, string> = { stable: '稳定', recommend: '推荐', turbo: '极速' };
+      if (map[speedPreset]) { $(map[speedPreset]).classList.add('_on'); setText('__spdlbl__', labels[speedPreset] || '推荐'); }
+    }
+    // 恢复持久化的屏蔽词到输入框
+    if (blockKeywords.length > 0) {
+      $<HTMLInputElement>('__blkin__').value = blockKeywords.join(',');
+      if (blockOn) { $('__blkpnl__').classList.add('on'); $<HTMLButtonElement>('__block__').textContent = '🚫 ON'; $<HTMLButtonElement>('__block__').className = '_nd'; }
+    }
+    refreshBlockTags();
+    refreshPanel();
+  } catch (e) { if (initTried < 10) setTimeout(tryInit, 1500); }
 }
 setTimeout(tryInit, 1000);
 window.addEventListener('load', () => setTimeout(tryInit, 1500));
@@ -84,6 +140,12 @@ chrome.runtime.onMessage.addListener((message: CommandMessage) => {
   if (message.command === 'START') start();
   else if (message.command === 'STOP') stop();
   else if (message.command === 'GET_STATUS') sendStatus(currentState);
+  else if (message.command === 'TOGGLE_PANEL') {
+    chrome.storage.local.get('panelVisible').then(r => {
+      panelVisible = r.panelVisible !== false;
+      if (pnl) pnl.style.display = panelVisible ? '' : 'none';
+    });
+  }
 });
 
 document.addEventListener('mousemove', (e) => {
@@ -203,6 +265,10 @@ function buildPanel(): void {
   el.innerHTML = `<style>${CSS}</style>${HTML}`;
   document.body.appendChild(el);
   pnl = el;
+  // 应用持久化的面板显隐
+  chrome.storage.local.get('panelVisible').then(r => {
+    if (r.panelVisible === false) { pnl!.style.display = 'none'; panelVisible = false; }
+  });
 
   $('__h__').addEventListener('mousedown', (e) => {
     const me = e as MouseEvent;
@@ -236,7 +302,7 @@ function buildPanel(): void {
       b.className = blockOn ? '_nd' : '';
       $('__blkpnl__').classList.toggle('on', blockOn);
       if (blockOn) { applyBlockKeywords(); refreshPanel(); }
-      else { blockKeywords = []; skippedCount = 0; skippedTexts.clear(); refreshBlockTags(); refreshPanel(); }
+      else { blockKeywords = []; skippedCount = 0; skippedTexts.clear(); refreshBlockTags(); refreshPanel(); saveSettings(); }
     });
     const blkIn = $<HTMLInputElement>('__blkin__');
     if (blkIn) {
@@ -343,6 +409,7 @@ function applyBlockKeywords(): void {
   const raw = $<HTMLInputElement>('__blkin__').value.trim();
   blockKeywords = raw ? raw.split(/[,，\s]+/).filter(Boolean).map(k => k.toLowerCase()) : [];
   refreshBlockTags();
+  saveSettings();
 }
 
 function refreshBlockTags(): void {
@@ -360,6 +427,7 @@ function refreshBlockTags(): void {
         const kw = el.getAttribute('data-kw') || '';
         blockKeywords = blockKeywords.filter(k => k !== kw);
         $<HTMLInputElement>('__blkin__').value = blockKeywords.join(',');
+        saveSettings();
         refreshBlockTags();
         refreshPanel();
       });
@@ -414,6 +482,7 @@ function slider(sid: string, vid: string, key: keyof SpeedSettings): void {
     setText(vid, v + 'ms');
     (spd as any)[key] = v;
     applySpeed(spd);
+    speedPreset = ''; saveSettings();
   });
 }
 
@@ -428,6 +497,7 @@ function preset(name: string): void {
   const p = SPEED_PRESETS[name];
   if (!p) return;
   spd = { ...p }; applySpeed(spd); syncSlidersUI();
+  speedPreset = name; saveSettings();
   ['__pre_s__','__pre_r__','__pre_t__'].forEach(id => $(id).classList.remove('_on'));
   const map: Record<string, string> = { stable: '__pre_s__', recommend: '__pre_r__', turbo: '__pre_t__' };
   $(map[name]).classList.add('_on');

@@ -2,13 +2,17 @@
 body{width:260px;font-family:system-ui,-apple-system,sans-serif;background:#f0f2f5;color:#333;}
 .c{padding:16px;}
 .h{font-size:16px;font-weight:700;text-align:center;color:#1a73e8;margin-bottom:12px;}
-.s{background:#fff;border-radius:8px;padding:10px 14px;margin-bottom:12px;}
+.s{background:#fff;border-radius:8px;padding:10px 14px;margin-bottom:10px;}
 .r{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;}
 .r span:first-child{color:#888;}
 .r span:last-child{font-weight:600;}
-.b{width:100%;padding:10px 0;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;letter-spacing:2px;transition:all .2s;}
-.b:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.15);}
-.b1{background:#1a73e8;color:#fff;}
-.b2{background:#e53935;color:#fff;}
-.hidden{display:none!important;}
+/* 面板显隐开关 */
+.t{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;background:#fff;border-radius:8px;margin-bottom:10px;font-size:13px;}
+.t span{color:#333;font-weight:600;}
+.sw{position:relative;display:inline-block;width:40px;height:22px;}
+.sw input{opacity:0;width:0;height:0;}
+.sw .slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#ccc;border-radius:22px;transition:.3s;}
+.sw .slider:before{position:absolute;content:"";height:16px;width:16px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;}
+.sw input:checked+.slider{background:#1a73e8;}
+.sw input:checked+.slider:before{transform:translateX(18px);}
 .tip{font-size:11px;color:#999;text-align:center;margin-top:10px;line-height:1.5;}
