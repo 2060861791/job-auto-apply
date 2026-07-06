@@ -59,7 +59,7 @@ let fHideListOpen = false;
 let fMinimized = false;
 
 // 拖动
-let drag = false, dx = 0, dy = 0, px = 0, py = 0;
+let drag = false, dx = 0, dy = 0, px = 0, py = 0, dragged = false;
 
 // 投递记录
 interface Sub { time: string; title: string; company: string; location: string; tags: string; status: string; }
@@ -179,12 +179,16 @@ chrome.runtime.onMessage.addListener((message: CommandMessage) => {
 
 document.addEventListener('mousemove', (e) => {
   if (!drag) return;
-  const target = fPnl && fPnl.style.transition === 'none' ? fPnl : (pnl || fPnl);
+  dragged = true;
+  let target: HTMLElement | null = null;
+  if (pnl && pnl.style.transition === 'none') target = pnl;
+  else if (fPnl && fPnl.style.transition === 'none') target = fPnl;
+  else target = document.getElementById('_f_mbtn_');
   if (!target) return;
   target.style.left = Math.max(0, Math.min(px + e.clientX - dx, innerWidth - target.offsetWidth)) + 'px';
   target.style.top = Math.max(0, Math.min(py + e.clientY - dy, innerHeight - 60)) + 'px';
 });
-document.addEventListener('mouseup', () => { drag = false; });
+document.addEventListener('mouseup', () => { drag = false; setTimeout(() => dragged = false, 0); });
 document.addEventListener('click', (e) => {
   if (!inspectOn) return;
   // 跳过面板内的按钮点击，否则 inspect 无法关闭
@@ -740,7 +744,6 @@ const FILTER_HTML = `
 <div class="_fb">
   <button id="__fscan__">🔄 重新扫描</button>
 </div>
-<div id="_f_mbtn_" style="display:none">🔍</div>
 `;
 
 let fPnl: HTMLElement | null = null;
@@ -752,6 +755,28 @@ function buildFilterPanel(): void {
   el.innerHTML = `<style>${FILTER_CSS}</style>${FILTER_HTML}`;
   document.body.appendChild(el);
   fPnl = el;
+
+  // 最小化浮动按钮（独立于面板，直接加到 body）
+  let mbtn = document.getElementById('_f_mbtn_');
+  if (!mbtn) {
+    mbtn = document.createElement('div');
+    mbtn.id = '_f_mbtn_';
+    mbtn.textContent = '🔍';
+    mbtn.style.cssText = 'display:none;position:fixed;top:80px;right:16px;z-index:2147483646;width:36px;height:36px;border-radius:50%;background:#1e3a3a;color:#a6e3a1;cursor:pointer;font-size:16px;box-shadow:0 4px 20px rgba(0,0,0,.5);border:1px solid #3a5545;align-items:center;justify-content:center;';
+    document.body.appendChild(mbtn);
+    // 拖动
+    mbtn.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      drag = true; dx = (e as MouseEvent).clientX; dy = (e as MouseEvent).clientY;
+      const r = mbtn!.getBoundingClientRect();
+      px = r.left; py = r.top;
+    });
+    // 点击展开（拖动了就不触发）
+    mbtn.addEventListener('click', (e) => {
+      if (!dragged) toggleMinimize();
+      (e as MouseEvent).stopPropagation();
+    });
+  }
 
   $('__fh__').addEventListener('mousedown', (e) => {
     const me = e as MouseEvent;
@@ -789,8 +814,6 @@ function buildFilterPanel(): void {
   });
   // 最小化
   click('__fmin__', toggleMinimize);
-  // 浮动按钮点击展开
-  $('_f_mbtn_').addEventListener('click', toggleMinimize);
   // 已隐藏列表展开/折叠
   click('__fhidrow__', () => {
     fHideListOpen = !fHideListOpen;
