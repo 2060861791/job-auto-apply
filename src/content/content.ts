@@ -678,6 +678,9 @@ const FILTER_CSS = `
 #_f_ ._fhlist ._hi:last-child{border-bottom:none}
 #_f_ ._fhlist ._hit{color:#cdd6f4}
 #_f_ ._fhlist ._hic{color:#78789e}
+#_f_ ._fhw{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;margin:4px 0;background:#2a1a2e;border:1px solid #5a3a5e;border-radius:7px;cursor:pointer;font-size:11px;font-weight:600;color:#f5c2e7;transition:all .2s;}
+#_f_ ._fhw:hover{background:#3a2a3e;border-color:#f38ba8;}
+#_f_ ._fhc{background:#f38ba8;color:#1a1a2e;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;}
 `;
 
 const FILTER_HTML = `
@@ -687,8 +690,8 @@ const FILTER_HTML = `
 </div>
 <div class="_fs" id="__fstats__">
   <div class="_fl"><span class="_fd">屏蔽词</span><span id="__fkw__">-</span></div>
-  <div class="_fl" id="__fhidrow__" style="cursor:pointer"><span class="_fd">已隐藏</span><span class="_flc" id="__fhid__" style="color:#f38ba8">0  ▸</span></div>
-  <div class="_fhlist" id="__fhlist__" style="display:none;max-height:150px;overflow-y:auto;margin:4px 0"></div>
+  <div class="_fhw" id="__fhidrow__"><span>🚫 屏蔽列表</span><span class="_fhc" id="__fhid__">0  ▸</span></div>
+  <div class="_fhlist" id="__fhlist__" style="display:none;max-height:160px;overflow-y:auto;margin:2px 0 6px 0"></div>
   <div class="_fl"><span class="_fd">🟢 双休</span><span class="_flc" style="color:#28a745" id="__fc_shuang__">0</span></div>
   <div class="_fl"><span class="_fd">🟡 大小周</span><span class="_flc" style="color:#ffc107" id="__fc_dxzhou__">0</span></div>
   <div class="_fl"><span class="_fd">🔴 单休</span><span class="_flc" style="color:#dc3545" id="__fc_danxiu__">0</span></div>

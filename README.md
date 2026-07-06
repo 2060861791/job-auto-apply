@@ -1,9 +1,9 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/Chrome-Extension-4285F4?style=for-the-badge&logo=google-chrome&logoColor=white" alt="Chrome Extension">
-<img src="https://img.shields.io/badge/Manifest-V3-34A853?style=for-the-badge&logo=google-chrome&logoColor=white" alt="Manifest V3">
-<img src="https://img.shields.io/badge/%E7%BA%AF%E5%8E%9F%E7%94%9F-no_framework-8B5CF6?style=for-the-badge" alt="纯原生">
-<img src="https://img.shields.io/badge/%E5%A4%A7%E5%B0%8F-~30KB-22C55E?style=for-the-badge" alt="~30KB">
+<img src="https://img.shields.io/badge/Chrome-Extension-4285F4?style=for-the-badge&logo=google-chrome&logoColor=white">
+<img src="https://img.shields.io/badge/Manifest-V3-34A853?style=for-the-badge&logo=google-chrome&logoColor=white">
+<img src="https://img.shields.io/badge/%E7%BA%AF%E5%8E%9F%E7%94%9F-no_framework-8B5CF6?style=for-the-badge">
+<img src="https://img.shields.io/badge/%E5%A4%A7%E5%B0%8F-~51KB-22C55E?style=for-the-badge">
 
 </div>
 
@@ -13,11 +13,13 @@
 
 <p align="center">
   <b>极简 · 极小 · 纯原生</b><br>
-  <sub>一个 ~30KB 的 Chrome 扩展，没有 Playwright，没有 Puppeteer，没有框架</sub>
+  <sub>一个 ~51KB 的 Chrome 扩展，没有 Playwright，没有 Puppeteer，没有框架</sub>
 </p>
 
 <p align="center">
-  每天 <b>150</b> 次沟通机会，设好条件 → 一键投递 → 解放双手 🤲
+  每天 <b>150</b> 次沟通机会<br>
+  自动投递 + 精选过滤 + 工作制高亮 + 一键导出<br>
+  设好条件 → 一键投递 → 解放双手 🤲
 </p>
 
 <br>
@@ -38,6 +40,41 @@
 
 ---
 
+## 🆕 v1.1 全新「精选模式」
+
+> 不想一个个翻？开启精选模式，屏蔽词匹配的职位**直接从页面消失**，剩下的自动标注工作制。
+
+<div align="center">
+
+| | |
+|:---:|:---:|
+| **🔍 精选模式面板** | **🏷 卡片工作制标注** |
+| <img src="assets/img4.png" width="720"> | <img src="assets/img5.png" width="720"> |
+| 独立面板，显示屏蔽列表与统计 | 绿/黄/红左边框 + 彩色 badge |
+
+</div>
+
+### 怎么工作的
+
+```
+开启精选模式
+  │
+  ├── 屏蔽词匹配 → display:none 隐藏 (不删 DOM)
+  ├── 卡片文本匹配 → 左边框 + 彩色 badge
+  │     🟢 双休  🟡 大小周  🔴 单休
+  │     🔵 朝九晚五/六  🟠 有工作时间  ⬜ 未匹配
+  │
+  ├── MutationObserver 监听虚拟列表
+  │     └── 新卡片加载 → 立即过滤 + 标注
+  │
+  └── 点击职位 → 右侧详情 p.desc 加载
+        └── 实时解析工作制 → 更新卡片 badge (缓存)
+```
+
+<br>
+
+---
+
 ## 💡 为什么选它
 
 > 市面上有 Playwright 方案、Selenium 方案、Puppeteer 方案。
@@ -53,7 +90,7 @@
 
 <br>
 
-**30KB** 核心逻辑<br>
+**~51KB** 核心逻辑<br>
 没有 `node_modules` 黑洞<br>
 没有浏览器驱动<br>
 没有 Python 环境
@@ -65,10 +102,11 @@
 
 <br>
 
-**零依赖运行**<br>
+**零运行时依赖**<br>
 不依赖 Playwright<br>
 不依赖 Puppeteer<br>
-不依赖任何框架
+不依赖任何框架<br>
+纯 DOM API
 
 </td>
 <td width="33%" align="center">
@@ -77,7 +115,6 @@
 
 <br>
 
-`npm run build`<br>
 拖进 Chrome<br>
 点开始<br>
 **完。**
@@ -96,16 +133,18 @@
 
 | | |
 |:---:|:---:|
-| **🏠 主页面** | **⚙ 设置面板** |
-| <img src="assets/img2.png" width="450" alt="主页面"> | <img src="assets/img3.png" width="450" alt="设置页"> |
-| 可拖动浮动面板，所有操作一手掌握 | 三档预设 + 独立滑块，速度随心调 |
+| **🏠 自动投递面板** | **⚙ 设置面板** |
+| <img src="assets/img2.png" width="450"> | <img src="assets/img3.png" width="450"> |
+| 可拖动浮动面板，所有操作一手掌握 | 三档预设 + 独立滑块 + 屏蔽词管理 |
 
 <br>
 
 | **📥 导出记录** |
 |:---:|
-| <img src="assets/img1.png" width="650" alt="导出记录"> |
+| <img src="assets/img1.png" width="650"> |
 | 一键导出 `.txt`，公司、地址、标签、时间一目了然 |
+
+<br>
 
 </div>
 
@@ -119,54 +158,12 @@
 npm install && npm run build
 ```
 
-然后：
-
 1. Chrome → `chrome://extensions` → 开启 **开发者模式**
 2. **加载已解压的扩展程序** → 选 `dist/` 目录
 3. 打开 [BOSS 直聘](https://www.zhipin.com/) 搜索结果页
-4. 👉 页面右侧浮动面板 → **▶ 开 始**
+4. Popup 里打开开关 → 👉 页面右侧浮动面板 → **▶ 开 始**
 
-> 💡 **提示**：构建依赖只有 `esbuild` + `typescript`，运行时代码是**纯浏览器 API**——`querySelector`、`MutationObserver`、`XPath`、`setTimeout`，没有任何第三方运行时依赖。
-
-<br>
-
----
-
-## 🧠 怎么工作的
-
-```
-搜索页 → 检测职位列表 → 8秒/个估算倒计时
-                           │
-     ┌──────────────────────┘
-     ▼
-  🔍 找下一条 → ✨ 高亮 → 👆 点击职位
-                              │
-                              ▼
-                       等待右侧详情加载
-                              │
-                       找「立即沟通」按钮
-                              │
-                        ✨ 高亮 → 👆 点击
-                              │
-                         检查弹窗
-                         /       \
-                    有弹窗        无
-                       │          │
-                 点「留在此页」   记录 ✅
-                       │          │
-                       └────┬─────┘
-                            │
-                     ◀ 下一条 ──┘
-
-             全部完成 / 手动停止 → 📥 导出
-```
-
-| 为什么这么做 | |
-|---|---|
-| 状态机 | `while(true)` 停不下来，状态机能 |
-| 每次查 DOM | 虚拟列表会销毁节点，缓存 = 点空气 |
-| text/role 定位 | BOSS 的 class 每次都变，文字不会 |
-| 输出到面板 | 网站反调试，`console.log` 会被检测 |
+> 💡 **提示**：构建依赖只有 `esbuild` + `typescript`。运行时不依赖任何第三方库 — 纯 `querySelector` + `MutationObserver` + `XPath` + `setTimeout`。
 
 <br>
 
@@ -180,14 +177,14 @@ npm install && npm run build
 ├── esbuild.config.mjs          构建脚本
 ├── src/
 │   ├── shared/types.ts         类型 · 枚举 · 速度预设
-│   ├── content/content.ts      🔥 全部核心逻辑（~1000行）
-│   ├── popup/                  极简弹窗（状态预览）
+│   ├── content/content.ts      🔥 全部核心逻辑（~1200行）
+│   ├── popup/                  弹窗（状态 + 双开关）
 │   └── background/             Service Worker（消息中继）
 ├── assets/
-│   ├── test.gif                ← 自动投递演示
-│   ├── img1.png                ← 导出记录
-│   ├── img2.png                ← 主页面
-│   └── img3.png                ← 设置面板
+│   ├── test.gif                自动投递演示
+│   ├── img1.png                导出记录截图
+│   ├── img2.png                主页面截图
+│   └── img3.png                设置面板截图
 └── dist/                       构建产物 → 加载到 Chrome
 ```
 
@@ -196,14 +193,17 @@ npm install && npm run build
 | 清单 | Manifest V3 |
 | 语言 | TypeScript |
 | 打包 | esbuild → IIFE |
-| 运行时依赖 | **零。** 纯 DOM API |
-| 核心大小 | ~30KB（content.js） |
+| 运行时依赖 | **零** |
+| 核心大小 | ~51KB（content.js） |
+| 持久化 | `chrome.storage.local` |
 
 <br>
 
 ---
 
 ## 🎮 面板操作
+
+### 自动投递面板
 
 | 操作 | 说明 |
 |------|------|
@@ -212,8 +212,16 @@ npm install && npm run build
 | `◀ ▶` | 手动浏览职位 |
 | `🎯` | 点击检测：点页面元素查看 DOM 信息 |
 | `🔄` | 刷新职位列表 |
+| `🚫 OFF/ON` | 关键词屏蔽开关 |
 | `📥 导出` | 导出投递记录为 `.txt` |
 | `⚙` | 速度设置面板 |
+
+### 精选模式面板
+
+| 操作 | 说明 |
+|------|------|
+| `🚫 屏蔽列表` | 点击展开/折叠，查看具体被屏蔽的职位和公司 |
+| `🔄 重新扫描` | 清缓存重新匹配所有卡片 |
 
 <br>
 
@@ -235,7 +243,7 @@ npm install && npm run build
 
 ### 没有 Playwright。没有 Selenium。没有 800MB 的 node_modules。
 
-### 就一个 30KB 的 Chrome 扩展，拖进去，点开始。🎯
+### 就一个 ~51KB 的 Chrome 扩展，拖进去，点开始。🎯
 
 <br>
 
