@@ -94,7 +94,8 @@ async function loadSettings(): Promise<void> {
     // 精选模式恢复
     if (r.filterMode === true) {
       filterMode = true;
-      setTimeout(() => { applyFilterToDOM(); startFilterObserver(); }, 1000);
+      showFilterPanel();
+      setTimeout(() => { applyFilterToDOM(); startFilterObserver(); startDetailObserver(); }, 1000);
     }
     // 面板显隐
     if (r.panelVisible === false && pnl) {
@@ -160,16 +161,21 @@ chrome.runtime.onMessage.addListener((message: CommandMessage) => {
   else if (message.command === 'TOGGLE_FILTER') {
     chrome.storage.local.get('filterMode').then(r => {
       filterMode = r.filterMode === true;
-      if (filterMode) { applyFilterToDOM(); startFilterObserver(); }
-      else { removeFilterFromDOM(); stopFilterObserver(); }
+      if (filterMode) {
+        showFilterPanel(); applyFilterToDOM(); startFilterObserver(); startDetailObserver();
+      } else {
+        hideFilterPanel(); removeFilterFromDOM(); stopFilterObserver(); stopDetailObserver();
+      }
     });
   }
 });
 
 document.addEventListener('mousemove', (e) => {
-  if (!drag || !pnl) return;
-  pnl.style.left = Math.max(0, Math.min(px + e.clientX - dx, innerWidth - pnl.offsetWidth)) + 'px';
-  pnl.style.top = Math.max(0, Math.min(py + e.clientY - dy, innerHeight - 60)) + 'px';
+  if (!drag) return;
+  const target = fPnl && fPnl.style.transition === 'none' ? fPnl : (pnl || fPnl);
+  if (!target) return;
+  target.style.left = Math.max(0, Math.min(px + e.clientX - dx, innerWidth - target.offsetWidth)) + 'px';
+  target.style.top = Math.max(0, Math.min(py + e.clientY - dy, innerHeight - 60)) + 'px';
 });
 document.addEventListener('mouseup', () => { drag = false; });
 document.addEventListener('click', (e) => {
@@ -325,7 +331,7 @@ function buildPanel(): void {
     const blkIn = $<HTMLInputElement>('__blkin__');
     if (blkIn) {
       // 输入即生效，无需等回车或失焦
-      blkIn.addEventListener('input', () => { applyBlockKeywords(); refreshPanel(); if (filterMode) applyFilterToDOM(); });
+      blkIn.addEventListener('input', () => { applyBlockKeywords(); refreshPanel(); if (filterMode) { applyFilterToDOM(); refreshFilterPanel(); } });
     }
   } catch { /* 面板主功能不受影响 */ }
   click('__cfg__', () => { cfgOpen = !cfgOpen; $('__cfgpnl__').classList.toggle('on', cfgOpen); });
@@ -448,7 +454,7 @@ function refreshBlockTags(): void {
         saveSettings();
         refreshBlockTags();
         refreshPanel();
-        if (filterMode) applyFilterToDOM();
+        if (filterMode) { applyFilterToDOM(); refreshFilterPanel(); }
       });
     });
   }
@@ -461,8 +467,25 @@ function isBlocked(card: HTMLElement): boolean {
 }
 
 // ============================================================
-// 精选模式 —— DOM 过滤 + 工作制高亮
+// 精选模式 —— DOM 过滤 + 工作制高亮 + 详情检测 + 独立面板
 // ============================================================
+
+type ScheduleType = '双休' | '大小周' | '单休' | '朝九晚五' | '朝九晚六' | '上班时间' | '工作时间';
+// 详情 p.desc 关键词（优先级从高到低）
+const DETAIL_KW: [string, ScheduleType][] = [
+  ['单休', '单休'], ['大小周', '大小周'], ['双休', '双休'],
+  ['朝九晚五', '朝九晚五'], ['朝九晚六', '朝九晚六'],
+  ['上班时间', '上班时间'], ['工作时间', '工作时间'],
+];
+// 已扫描的 schedule 缓存（title → ScheduleType）
+const scheduleCache = new Map<string, ScheduleType>();
+
+// 精选模式统计
+let filterHiddenCount = 0;
+let schedCounts: Record<ScheduleType | '未匹配', number> = { 双休: 0, 大小周: 0, 单休: 0, 朝九晚五: 0, 朝九晚六: 0, 上班时间: 0, 工作时间: 0, 未匹配: 0 };
+
+// 详情面板 observer
+let detailObserver: MutationObserver | null = null;
 
 function matchesBlockKeywords(card: HTMLElement): boolean {
   if (blockKeywords.length === 0) return false;
@@ -470,61 +493,83 @@ function matchesBlockKeywords(card: HTMLElement): boolean {
   return blockKeywords.some(kw => title.includes(kw));
 }
 
-type ScheduleType = '双休' | '大小周' | '单休';
-
 function getScheduleType(card: HTMLElement): ScheduleType | null {
   const text = card.textContent || '';
   if (text.includes('单休')) return '单休';
   if (text.includes('大小周')) return '大小周';
   if (text.includes('双休')) return '双休';
+  if (text.includes('朝九晚五')) return '朝九晚五';
+  if (text.includes('朝九晚六')) return '朝九晚六';
+  if (text.includes('上班时间')) return '上班时间';
+  if (text.includes('工作时间')) return '工作时间';
   return null;
 }
 
-function ensureFilterStyle(): HTMLStyleElement {
-  if (filterStyleEl) return filterStyleEl;
-  filterStyleEl = document.createElement('style');
-  filterStyleEl.id = '__boss_filter_style__';
-  filterStyleEl.textContent = `
-    [data-boss-schedule]{position:relative!important}
-    [data-boss-schedule="双休"]{border-left:3px solid #28a745!important}
-    [data-boss-schedule="大小周"]{border-left:3px solid #ffc107!important}
-    [data-boss-schedule="单休"]{border-left:3px solid #dc3545!important}
-    [data-boss-schedule]::after{content:attr(data-boss-schedule);position:absolute;top:4px;right:6px;font-size:10px;font-weight:700;padding:1px 6px;border-radius:3px;pointer-events:none;z-index:1;line-height:1.4}
-    [data-boss-schedule="双休"]::after{background:#d4edda;color:#155724}
-    [data-boss-schedule="大小周"]::after{background:#fff3cd;color:#856404}
-    [data-boss-schedule="单休"]::after{background:#f8d7da;color:#721c24}
-  `;
-  document.head.appendChild(filterStyleEl);
-  return filterStyleEl;
+function parseDetailSchedule(descText: string): ScheduleType | null {
+  for (const [kw, type] of DETAIL_KW) {
+    if (descText.includes(kw)) return type;
+  }
+  return null;
 }
 
-function removeFilterStyle(): void {
-  if (filterStyleEl) { filterStyleEl.remove(); filterStyleEl = null; }
+function injectCardBadge(card: HTMLElement, sched: ScheduleType | '未匹配'): void {
+  // 移除旧 badge
+  card.querySelectorAll('.__boss_sched__').forEach(e => e.remove());
+  const badge = document.createElement('span');
+  badge.className = '__boss_sched__';
+  const colors: Record<string, [string, string]> = {
+    双休: ['#28a745', '#d4edda'], 大小周: ['#ffc107', '#fff3cd'],
+    单休: ['#dc3545', '#f8d7da'], 朝九晚五: ['#4a90d9', '#dbeafe'],
+    朝九晚六: ['#4a90d9', '#dbeafe'], 上班时间: ['#f59e0b', '#fef3c7'],
+    工作时间: ['#f59e0b', '#fef3c7'], 未匹配: ['#9ca3af', '#f3f4f6'],
+  };
+  const [border, bg] = colors[sched] || ['#9ca3af', '#f3f4f6'];
+  Object.assign(badge.style, {
+    display: 'inline-block', padding: '1px 6px', borderRadius: '2px',
+    fontSize: '10px', fontWeight: '700', marginRight: '6px',
+    borderLeft: `2px solid ${border}`, background: bg, color: border,
+    verticalAlign: 'middle', flexShrink: '0',
+  });
+  badge.textContent = sched;
+  // 插入到卡片最前面
+  const wrap = card.querySelector('.job-card-wrap') || card.querySelector('.job-card-box') || card;
+  wrap.insertBefore(badge, wrap.firstChild);
 }
 
 function applyFilterToCard(card: HTMLElement): void {
   if (matchesBlockKeywords(card)) {
     card.style.display = 'none';
     card.setAttribute('__boss_filtered__', '');
-    card.removeAttribute('data-boss-schedule');
     return;
   }
-  // 恢复（如果之前被隐藏）
   card.style.display = '';
   card.removeAttribute('__boss_filtered__');
-  // 工作制高亮
-  const schedule = getScheduleType(card);
-  if (schedule) {
-    ensureFilterStyle();
-    card.setAttribute('data-boss-schedule', schedule);
+  // 优先用缓存，其次卡片内文本
+  const title = txt(card, 'a.job-name');
+  const cached = scheduleCache.get(title);
+  if (cached) { injectCardBadge(card, cached); return; }
+  const sched = getScheduleType(card);
+  if (sched) {
+    scheduleCache.set(title, sched);
+    injectCardBadge(card, sched);
   } else {
-    card.removeAttribute('data-boss-schedule');
+    injectCardBadge(card, '未匹配');
   }
 }
 
 function applyFilterToDOM(): void {
   const cards = getJobCards();
-  for (const card of cards) applyFilterToCard(card);
+  schedCounts = { 双休: 0, 大小周: 0, 单休: 0, 朝九晚五: 0, 朝九晚六: 0, 上班时间: 0, 工作时间: 0, 未匹配: 0 };
+  filterHiddenCount = 0;
+  for (const card of cards) {
+    if (matchesBlockKeywords(card)) { filterHiddenCount++; }
+    applyFilterToCard(card);
+    const title = txt(card, 'a.job-name');
+    const s = scheduleCache.get(title) || getScheduleType(card);
+    if (s) { schedCounts[s]++; scheduleCache.set(title, s); }
+    else { schedCounts['未匹配']++; }
+  }
+  refreshFilterPanel();
 }
 
 function removeFilterFromDOM(): void {
@@ -532,10 +577,10 @@ function removeFilterFromDOM(): void {
     (c as HTMLElement).style.display = '';
     c.removeAttribute('__boss_filtered__');
   });
-  document.querySelectorAll('[data-boss-schedule]').forEach(c => {
-    c.removeAttribute('data-boss-schedule');
-  });
-  removeFilterStyle();
+  document.querySelectorAll('.__boss_sched__').forEach(c => c.remove());
+  filterHiddenCount = 0;
+  schedCounts = { 双休: 0, 大小周: 0, 单休: 0, 朝九晚五: 0, 朝九晚六: 0, 上班时间: 0, 工作时间: 0, 未匹配: 0 };
+  refreshFilterPanel();
 }
 
 function startFilterObserver(): void {
@@ -559,6 +604,134 @@ function startFilterObserver(): void {
 
 function stopFilterObserver(): void {
   if (filterObserver) { filterObserver.disconnect(); filterObserver = null; }
+}
+
+// 详情面板 observer —— 点击职位后检测 p.desc 的工作制信息
+function startDetailObserver(): void {
+  if (detailObserver) return;
+  detailObserver = new MutationObserver(() => {
+    const descEl = document.querySelector('.job-detail-body p.desc, .job-detail-container p.desc');
+    if (!descEl || !descEl.textContent) return;
+    const descText = descEl.textContent;
+    const detailSched = parseDetailSchedule(descText);
+    // 找到当前选中的卡片
+    const activeCard = document.querySelector('.job-card-wrap.active')?.closest('.card-area') as HTMLElement | null;
+    if (!activeCard) return;
+    const title = txt(activeCard, 'a.job-name');
+    if (!title) return;
+    const oldCached = scheduleCache.get(title);
+    if (detailSched && oldCached !== detailSched) {
+      scheduleCache.set(title, detailSched);
+      injectCardBadge(activeCard, detailSched);
+      schedCounts[detailSched] = (schedCounts[detailSched] || 0) + 1;
+      if (oldCached) schedCounts[oldCached] = Math.max(0, (schedCounts[oldCached] || 1) - 1);
+      refreshFilterPanel();
+    } else if (!detailSched && !oldCached) {
+      // 详情也未找到 → 保持未匹配
+    }
+  });
+  const detailContainer = document.querySelector('.job-detail-container');
+  if (detailContainer) {
+    detailObserver.observe(detailContainer, { childList: true, subtree: true });
+  } else {
+    // 等容器出现
+    const bodyObs = new MutationObserver(() => {
+      const dc = document.querySelector('.job-detail-container');
+      if (dc && detailObserver) { detailObserver.observe(dc, { childList: true, subtree: true }); bodyObs.disconnect(); }
+    });
+    bodyObs.observe(document.body, { childList: true, subtree: true });
+    setTimeout(() => bodyObs.disconnect(), 15000);
+  }
+}
+
+function stopDetailObserver(): void {
+  if (detailObserver) { detailObserver.disconnect(); detailObserver = null; }
+}
+
+// ============================================================
+// 精选模式面板 (#_f_)
+// ============================================================
+
+const FILTER_CSS = `
+#_f_{position:fixed;top:80px;right:392px;width:280px;background:#1a1a2e;color:#cdd6f4;border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,.55);z-index:2147483646;font-family:system-ui,-apple-system,sans-serif;font-size:12px;user-select:none;display:flex;flex-direction:column;}
+#_f_ ._fh{cursor:move;background:linear-gradient(135deg,#1e3a3a,#253530);padding:10px 14px;display:flex;align-items:center;gap:8px;border-radius:14px 14px 0 0;flex-shrink:0;}
+#_f_ ._fhh{color:#a6e3a1;font-weight:700;font-size:13px;flex:1;}
+#_f_ ._fhb{font-size:10px;background:#3a5545;color:#a6e3a1;padding:2px 8px;border-radius:10px;}
+#_f_ ._fs{padding:10px 14px;border-bottom:1px solid #2a2a44;flex-shrink:0;font-size:11px;line-height:1.6;}
+#_f_ ._fs ._fl{display:flex;justify-content:space-between;padding:2px 0;}
+#_f_ ._fs ._flc{font-weight:600;}
+#_f_ ._fs ._fd{color:#78789e;}
+#_f_ ._fb{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #2a2a44;flex-shrink:0;}
+#_f_ ._fb button{flex:1;padding:6px 0;border:1px solid #3a3a55;border-radius:7px;background:#22223a;color:#cdd6f4;font-size:11px;cursor:pointer;}
+#_f_ ._fb button:hover{background:#2d2d48;}
+`;
+
+const FILTER_HTML = `
+<div class="_fh" id="__fh__">
+  <span>🔍</span><span class="_fhh">精选模式</span>
+  <span class="_fhb" id="__fbadge__">OFF</span>
+</div>
+<div class="_fs" id="__fstats__">
+  <div class="_fl"><span class="_fd">屏蔽词</span><span id="__fkw__">-</span></div>
+  <div class="_fl"><span class="_fd">已隐藏</span><span class="_flc" id="__fhid__" style="color:#f38ba8">0</span></div>
+  <div class="_fl"><span class="_fd">🟢 双休</span><span class="_flc" style="color:#28a745" id="__fc_shuang__">0</span></div>
+  <div class="_fl"><span class="_fd">🟡 大小周</span><span class="_flc" style="color:#ffc107" id="__fc_dxzhou__">0</span></div>
+  <div class="_fl"><span class="_fd">🔴 单休</span><span class="_flc" style="color:#dc3545" id="__fc_danxiu__">0</span></div>
+  <div class="_fl"><span class="_fd">🔵 朝九晚五/六</span><span class="_flc" style="color:#4a90d9" id="__fc_9to5__">0</span></div>
+  <div class="_fl"><span class="_fd">🟠 有工作时间</span><span class="_flc" style="color:#f59e0b" id="__fc_worktime__">0</span></div>
+  <div class="_fl"><span class="_fd">⬜ 未匹配</span><span class="_flc" style="color:#9ca3af" id="__fc_none__">0</span></div>
+</div>
+<div class="_fb">
+  <button id="__fscan__">🔄 重新扫描</button>
+</div>
+`;
+
+let fPnl: HTMLElement | null = null;
+
+function buildFilterPanel(): void {
+  if (document.getElementById('_f_')) return;
+  const el = document.createElement('div');
+  el.id = '_f_';
+  el.innerHTML = `<style>${FILTER_CSS}</style>${FILTER_HTML}`;
+  document.body.appendChild(el);
+  fPnl = el;
+
+  $('__fh__').addEventListener('mousedown', (e) => {
+    const me = e as MouseEvent;
+    if ((me.target as HTMLElement).tagName === 'BUTTON') return;
+    drag = true; dx = me.clientX; dy = me.clientY;
+    const r = fPnl!.getBoundingClientRect();
+    px = r.left; py = r.top; fPnl!.style.transition = 'none';
+  });
+
+  click('__fscan__', () => { scheduleCache.clear(); applyFilterToDOM(); });
+}
+
+function refreshFilterPanel(): void {
+  if (!fPnl) return;
+  setText('__fbadge__', filterMode ? 'ON' : 'OFF');
+  if (filterMode) {
+    $<HTMLElement>('__fbadge__').style.background = '#28a745'; $<HTMLElement>('__fbadge__').style.color = '#fff';
+  } else {
+    $<HTMLElement>('__fbadge__').style.background = '#3a5545'; $<HTMLElement>('__fbadge__').style.color = '#a6e3a1';
+  }
+  setText('__fkw__', blockKeywords.length > 0 ? blockKeywords.join(', ') : '无');
+  setText('__fhid__', String(filterHiddenCount));
+  setText('__fc_shuang__', String(schedCounts['双休']));
+  setText('__fc_dxzhou__', String(schedCounts['大小周']));
+  setText('__fc_danxiu__', String(schedCounts['单休']));
+  setText('__fc_9to5__', String((schedCounts['朝九晚五'] || 0) + (schedCounts['朝九晚六'] || 0)));
+  setText('__fc_worktime__', String((schedCounts['上班时间'] || 0) + (schedCounts['工作时间'] || 0)));
+  setText('__fc_none__', String(schedCounts['未匹配']));
+}
+
+function showFilterPanel(): void {
+  buildFilterPanel();
+  if (fPnl) { fPnl.style.display = ''; refreshFilterPanel(); }
+}
+
+function hideFilterPanel(): void {
+  if (fPnl) fPnl.style.display = 'none';
 }
 
 // ============================================================

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "BOSS直聘自动投递",
-  "version": "1.0.0",
-  "description": "自动循环点击BOSS直聘职位列表中的「立即沟通」按钮",
+  "version": "1.1.0",
+  "description": "BOSS直聘助手：自动投递 + 精选过滤 + 工作制高亮 + 一键导出",
   "permissions": ["tabs", "storage"],
   "host_permissions": ["https://www.zhipin.com/*"],
   "action": {
