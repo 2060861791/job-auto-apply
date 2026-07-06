@@ -20,7 +20,7 @@ export enum AutomationState {
   NO_MORE_JOBS = 'NO_MORE_JOBS',
 }
 
-export interface CommandMessage { type: 'COMMAND'; command: 'START' | 'STOP' | 'GET_STATUS' | 'TOGGLE_PANEL'; }
+export interface CommandMessage { type: 'COMMAND'; command: 'START' | 'STOP' | 'GET_STATUS' | 'TOGGLE_PANEL' | 'TOGGLE_FILTER'; }
 export interface StatusMessage { type: 'STATUS'; state: AutomationState; processedCount: number; error?: string; }
 export interface LogMessage { type: 'LOG'; level: 'info' | 'warn' | 'error'; message: string; }
 export type Message = CommandMessage | StatusMessage | LogMessage;

@@ -48,6 +48,11 @@ let blockKeywords: string[] = [];
 let skippedCount = 0;
 const skippedTexts = new Set<string>();
 
+// 精选模式 —— DOM 层过滤 + 工作制高亮
+let filterMode = false;
+let filterObserver: MutationObserver | null = null;
+let filterStyleEl: HTMLStyleElement | null = null;
+
 // 拖动
 let drag = false, dx = 0, dy = 0, px = 0, py = 0;
 
@@ -75,16 +80,22 @@ async function saveSettings(): Promise<void> {
       speedPreset,
       blockKeywords,
       blockOn,
+      filterMode,
     });
   } catch { /* */ }
 }
 
 async function loadSettings(): Promise<void> {
   try {
-    const r = await chrome.storage.local.get(['speed', 'speedPreset', 'blockKeywords', 'blockOn', 'panelVisible']);
+    const r = await chrome.storage.local.get(['speed', 'speedPreset', 'blockKeywords', 'blockOn', 'panelVisible', 'filterMode']);
     if (r.speed) { spd = r.speed; applySpeed(spd); }
     if (r.speedPreset) speedPreset = r.speedPreset;
     if (r.blockKeywords) { blockKeywords = r.blockKeywords; blockOn = r.blockOn === true; }
+    // 精选模式恢复
+    if (r.filterMode === true) {
+      filterMode = true;
+      setTimeout(() => { applyFilterToDOM(); startFilterObserver(); }, 1000);
+    }
     // 面板显隐
     if (r.panelVisible === false && pnl) {
       pnl.style.display = 'none';
@@ -144,6 +155,13 @@ chrome.runtime.onMessage.addListener((message: CommandMessage) => {
     chrome.storage.local.get('panelVisible').then(r => {
       panelVisible = r.panelVisible !== false;
       if (pnl) pnl.style.display = panelVisible ? '' : 'none';
+    });
+  }
+  else if (message.command === 'TOGGLE_FILTER') {
+    chrome.storage.local.get('filterMode').then(r => {
+      filterMode = r.filterMode === true;
+      if (filterMode) { applyFilterToDOM(); startFilterObserver(); }
+      else { removeFilterFromDOM(); stopFilterObserver(); }
     });
   }
 });
@@ -307,7 +325,7 @@ function buildPanel(): void {
     const blkIn = $<HTMLInputElement>('__blkin__');
     if (blkIn) {
       // 输入即生效，无需等回车或失焦
-      blkIn.addEventListener('input', () => { applyBlockKeywords(); refreshPanel(); });
+      blkIn.addEventListener('input', () => { applyBlockKeywords(); refreshPanel(); if (filterMode) applyFilterToDOM(); });
     }
   } catch { /* 面板主功能不受影响 */ }
   click('__cfg__', () => { cfgOpen = !cfgOpen; $('__cfgpnl__').classList.toggle('on', cfgOpen); });
@@ -430,6 +448,7 @@ function refreshBlockTags(): void {
         saveSettings();
         refreshBlockTags();
         refreshPanel();
+        if (filterMode) applyFilterToDOM();
       });
     });
   }
@@ -439,6 +458,107 @@ function isBlocked(card: HTMLElement): boolean {
   if (!blockOn || blockKeywords.length === 0) return false;
   const title = txt(card, 'a.job-name').toLowerCase();
   return blockKeywords.some(kw => title.includes(kw));
+}
+
+// ============================================================
+// 精选模式 —— DOM 过滤 + 工作制高亮
+// ============================================================
+
+function matchesBlockKeywords(card: HTMLElement): boolean {
+  if (blockKeywords.length === 0) return false;
+  const title = txt(card, 'a.job-name').toLowerCase();
+  return blockKeywords.some(kw => title.includes(kw));
+}
+
+type ScheduleType = '双休' | '大小周' | '单休';
+
+function getScheduleType(card: HTMLElement): ScheduleType | null {
+  const text = card.textContent || '';
+  if (text.includes('单休')) return '单休';
+  if (text.includes('大小周')) return '大小周';
+  if (text.includes('双休')) return '双休';
+  return null;
+}
+
+function ensureFilterStyle(): HTMLStyleElement {
+  if (filterStyleEl) return filterStyleEl;
+  filterStyleEl = document.createElement('style');
+  filterStyleEl.id = '__boss_filter_style__';
+  filterStyleEl.textContent = `
+    [data-boss-schedule]{position:relative!important}
+    [data-boss-schedule="双休"]{border-left:3px solid #28a745!important}
+    [data-boss-schedule="大小周"]{border-left:3px solid #ffc107!important}
+    [data-boss-schedule="单休"]{border-left:3px solid #dc3545!important}
+    [data-boss-schedule]::after{content:attr(data-boss-schedule);position:absolute;top:4px;right:6px;font-size:10px;font-weight:700;padding:1px 6px;border-radius:3px;pointer-events:none;z-index:1;line-height:1.4}
+    [data-boss-schedule="双休"]::after{background:#d4edda;color:#155724}
+    [data-boss-schedule="大小周"]::after{background:#fff3cd;color:#856404}
+    [data-boss-schedule="单休"]::after{background:#f8d7da;color:#721c24}
+  `;
+  document.head.appendChild(filterStyleEl);
+  return filterStyleEl;
+}
+
+function removeFilterStyle(): void {
+  if (filterStyleEl) { filterStyleEl.remove(); filterStyleEl = null; }
+}
+
+function applyFilterToCard(card: HTMLElement): void {
+  if (matchesBlockKeywords(card)) {
+    card.style.display = 'none';
+    card.setAttribute('__boss_filtered__', '');
+    card.removeAttribute('data-boss-schedule');
+    return;
+  }
+  // 恢复（如果之前被隐藏）
+  card.style.display = '';
+  card.removeAttribute('__boss_filtered__');
+  // 工作制高亮
+  const schedule = getScheduleType(card);
+  if (schedule) {
+    ensureFilterStyle();
+    card.setAttribute('data-boss-schedule', schedule);
+  } else {
+    card.removeAttribute('data-boss-schedule');
+  }
+}
+
+function applyFilterToDOM(): void {
+  const cards = getJobCards();
+  for (const card of cards) applyFilterToCard(card);
+}
+
+function removeFilterFromDOM(): void {
+  document.querySelectorAll('[__boss_filtered__]').forEach(c => {
+    (c as HTMLElement).style.display = '';
+    c.removeAttribute('__boss_filtered__');
+  });
+  document.querySelectorAll('[data-boss-schedule]').forEach(c => {
+    c.removeAttribute('data-boss-schedule');
+  });
+  removeFilterStyle();
+}
+
+function startFilterObserver(): void {
+  if (filterObserver) return;
+  filterObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (node.classList.contains('card-area')) applyFilterToCard(node);
+        else {
+          const cards = node.querySelectorAll?.('div.card-area');
+          cards?.forEach(c => applyFilterToCard(c as HTMLElement));
+        }
+      }
+    }
+  });
+  const listEl = document.querySelector('ul.rec-job-list');
+  if (listEl) filterObserver.observe(listEl, { childList: true, subtree: false });
+  else filterObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function stopFilterObserver(): void {
+  if (filterObserver) { filterObserver.disconnect(); filterObserver = null; }
 }
 
 // ============================================================
@@ -690,7 +810,7 @@ function getTargetCard(): HTMLElement | null {
   // 跳过屏蔽的职位
   for (let j = 0; j < cards.length; j++) {
     const idx = (startIdx + j) % cards.length;
-    if (!isBlocked(cards[idx])) return cards[idx];
+    if (!isBlocked(cards[idx]) && !(filterMode && cards[idx].hasAttribute('__boss_filtered__'))) return cards[idx];
   }
   return null; // 全部被屏蔽
 }

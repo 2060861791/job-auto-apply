@@ -1,6 +1,6 @@
 /**
  * BOSS自动投递 - Popup (极简)
- * 状态预览 + 面板显隐开关
+ * 自动投递面板显隐 + 精选模式开关
  */
 
 import { AutomationState, type StatusMessage } from '../shared/types';
@@ -9,6 +9,7 @@ const st = document.getElementById('st') as HTMLSpanElement;
 const ct = document.getElementById('ct') as HTMLSpanElement;
 const eta = document.getElementById('eta') as HTMLSpanElement;
 const pv = document.getElementById('pv') as HTMLInputElement;
+const fm = document.getElementById('fm') as HTMLInputElement;
 
 const SCN: Record<string, string> = {
   IDLE: '就绪', FIND_NEXT_JOB: '查找职位', HIGHLIGHT_JOB: '高亮', CLICK_JOB: '点击',
@@ -18,22 +19,29 @@ const SCN: Record<string, string> = {
   NO_MORE_JOBS: '全部完成',
 };
 
-// 读取持久化的面板可见性
-(async () => {
-  const { panelVisible } = await chrome.storage.local.get('panelVisible');
-  pv.checked = panelVisible !== false; // 默认显示
+async function sendCmd(cmd: string): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'COMMAND', command: 'GET_STATUS' });
+  if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'COMMAND', command: cmd } as any);
+}
+
+// 读取持久化状态
+(async () => {
+  const { panelVisible, filterMode } = await chrome.storage.local.get(['panelVisible', 'filterMode']);
+  pv.checked = panelVisible !== false;
+  fm.checked = filterMode === true;
+  sendCmd('GET_STATUS');
 })();
 
-// 面板显隐开关
+// 自动投递面板显隐
 pv.addEventListener('change', () => {
-  (async () => {
-    const visible = pv.checked;
-    await chrome.storage.local.set({ panelVisible: visible });
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'COMMAND', command: 'TOGGLE_PANEL' });
-  })();
+  chrome.storage.local.set({ panelVisible: pv.checked });
+  sendCmd('TOGGLE_PANEL');
+});
+
+// 精选模式开关
+fm.addEventListener('change', () => {
+  chrome.storage.local.set({ filterMode: fm.checked });
+  sendCmd('TOGGLE_FILTER');
 });
 
 chrome.runtime.onMessage.addListener((msg: StatusMessage) => {
