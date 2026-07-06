@@ -716,7 +716,7 @@ const FILTER_CSS = `
 #_f_._fmin ._fs,#_f_._fmin ._fb,#_f_._fmin ._fhlist,#_f_._fmin ._fkwrow{display:none!important}
 #_f_._fmin{width:auto;min-width:0}
 #_f_._fmin ._fh{border-radius:14px}
-#_f_mbtn_{display:none;position:fixed;top:80px;right:16px;z-index:2147483646;background:#1e3a3a;color:#a6e3a1;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;box-shadow:0 4px 20px rgba(0,0,0,.5);border:1px solid #3a5545;writing-mode:vertical-lr;letter-spacing:2px;}
+#_f_mbtn_{display:none;position:fixed;top:80px;right:16px;z-index:2147483646;width:36px;height:36px;border-radius:50%;background:#1e3a3a;color:#a6e3a1;cursor:pointer;font-size:16px;box-shadow:0 4px 20px rgba(0,0,0,.5);border:1px solid #3a5545;align-items:center;justify-content:center}
 #_f_mbtn_:hover{background:#2a4a3a}
 `;
 
@@ -740,7 +740,7 @@ const FILTER_HTML = `
 <div class="_fb">
   <button id="__fscan__">🔄 重新扫描</button>
 </div>
-<div id="_f_mbtn_">🔍</div>
+<div id="_f_mbtn_" style="display:none">🔍</div>
 `;
 
 let fPnl: HTMLElement | null = null;
@@ -810,11 +810,11 @@ function toggleMinimize(): void {
   fMinimized = !fMinimized;
   if (!fPnl) return;
   if (fMinimized) {
-    fPnl.classList.add('_fmin');
+    fPnl.style.display = 'none';
     const mbtn = document.getElementById('_f_mbtn_');
-    if (mbtn) { mbtn.style.display = 'block'; mbtn.textContent = '🔍 ' + filterHiddenCount; }
+    if (mbtn) mbtn.style.display = 'flex';
   } else {
-    fPnl.classList.remove('_fmin');
+    fPnl.style.display = '';
     const mbtn = document.getElementById('_f_mbtn_');
     if (mbtn) mbtn.style.display = 'none';
   }
@@ -835,9 +835,6 @@ function refreshFilterPanel(): void {
     const cpin = $<HTMLInputElement>('__fcpin__');
     if (cpin) cpin.placeholder = '🏢: ' + blockCompanies.join(', ');
   }
-  // 浮动按钮更新
-  const mbtn = document.getElementById('_f_mbtn_');
-  if (mbtn && fMinimized) mbtn.textContent = '🔍 ' + filterHiddenCount;
   // 已隐藏数量 + 箭头
   {
     const hs = $('__fhid__');
