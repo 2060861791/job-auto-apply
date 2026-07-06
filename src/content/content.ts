@@ -53,8 +53,10 @@ let filterMode = false;
 let filterObserver: MutationObserver | null = null;
 let filterStyleEl: HTMLStyleElement | null = null;
 let filterIObserver: IntersectionObserver | null = null;
+let blockCompanies: string[] = [];
 let filteredJobs: { title: string; company: string }[] = [];
 let fHideListOpen = false;
+let fMinimized = false;
 
 // 拖动
 let drag = false, dx = 0, dy = 0, px = 0, py = 0;
@@ -82,6 +84,7 @@ async function saveSettings(): Promise<void> {
       speed: spd,
       speedPreset,
       blockKeywords,
+      blockCompanies,
       blockOn,
       filterMode,
     });
@@ -90,10 +93,11 @@ async function saveSettings(): Promise<void> {
 
 async function loadSettings(): Promise<void> {
   try {
-    const r = await chrome.storage.local.get(['speed', 'speedPreset', 'blockKeywords', 'blockOn', 'panelVisible', 'filterMode']);
+    const r = await chrome.storage.local.get(['speed', 'speedPreset', 'blockKeywords', 'blockCompanies', 'blockOn', 'panelVisible', 'filterMode']);
     if (r.speed) { spd = r.speed; applySpeed(spd); }
     if (r.speedPreset) speedPreset = r.speedPreset;
     if (r.blockKeywords) { blockKeywords = r.blockKeywords; blockOn = r.blockOn === true; }
+    if (r.blockCompanies) blockCompanies = r.blockCompanies;
     // 精选模式恢复
     if (r.filterMode === true) {
       filterMode = true;
@@ -489,9 +493,11 @@ let schedCounts: Record<ScheduleType | '未匹配', number> = { 双休: 0, 大�
 let detailObserver: MutationObserver | null = null;
 
 function matchesBlockKeywords(card: HTMLElement): boolean {
-  if (blockKeywords.length === 0) return false;
+  if (blockKeywords.length === 0 && blockCompanies.length === 0) return false;
   const title = txt(card, 'a.job-name').toLowerCase();
-  return blockKeywords.some(kw => title.includes(kw));
+  const company = txt(card, 'span.boss-name').toLowerCase();
+  return blockKeywords.some(kw => title.includes(kw))
+      || blockCompanies.some(c => company.includes(c.toLowerCase()));
 }
 
 function getScheduleType(card: HTMLElement): ScheduleType | null {
@@ -707,16 +713,23 @@ const FILTER_CSS = `
 #_f_ ._fkwrow input:focus{border-color:#a6e3a1;}
 #_f_ ._fkwrow button{padding:4px 10px;border:1px solid #a6e3a1;border-radius:5px;background:#22223a;color:#a6e3a1;font-size:10px;cursor:pointer;white-space:nowrap;}
 #_f_ ._fkwrow button:hover{background:#2a3a2a;}
+#_f_._fmin ._fs,#_f_._fmin ._fb,#_f_._fmin ._fhlist,#_f_._fmin ._fkwrow{display:none!important}
+#_f_._fmin{width:auto;min-width:0}
+#_f_._fmin ._fh{border-radius:14px}
+#_f_mbtn_{display:none;position:fixed;top:80px;right:16px;z-index:2147483646;background:#1e3a3a;color:#a6e3a1;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;box-shadow:0 4px 20px rgba(0,0,0,.5);border:1px solid #3a5545;writing-mode:vertical-lr;letter-spacing:2px;}
+#_f_mbtn_:hover{background:#2a4a3a}
 `;
 
 const FILTER_HTML = `
 <div class="_fh" id="__fh__">
   <span>🔍</span><span class="_fhh">精选模式</span>
   <span class="_fhb" id="__fbadge__">OFF</span>
+  <button id="__fmin__" title="最小化" style="width:22px;height:22px;border-radius:5px;border:none;background:transparent;color:#a6adc8;font-size:14px;cursor:pointer;">─</button>
 </div>
 <div class="_fs" id="__fstats__">
   <div class="_fl"><span class="_fd">屏蔽词</span><span id="__fkw__">-</span></div>
-  <div class="_fkwrow"><input type="text" id="__fkwin__" placeholder="+ 添加屏蔽词，逗号分隔"><button id="__fkwok__">确定</button></div>
+  <div class="_fkwrow"><input type="text" id="__fkwin__" placeholder="+ 职位关键词"><button id="__fkwok__">确定</button></div>
+  <div class="_fkwrow"><input type="text" id="__fcpin__" placeholder="+ 公司名"><button id="__fcpok__">确定</button></div>
   <div class="_fhw" id="__fhidrow__"><span>🚫 屏蔽列表</span><span class="_fhc" id="__fhid__">0  ▸</span></div>
   <div class="_fhlist" id="__fhlist__" style="display:none;max-height:160px;overflow-y:auto;margin:2px 0 6px 0"></div>
   <div class="_fl"><span class="_fd">🟢 双休</span><span class="_flc" style="color:#28a745" id="__fc_shuang__">0</span></div>
@@ -727,6 +740,7 @@ const FILTER_HTML = `
 <div class="_fb">
   <button id="__fscan__">🔄 重新扫描</button>
 </div>
+<div id="_f_mbtn_">🔍</div>
 `;
 
 let fPnl: HTMLElement | null = null;
@@ -761,6 +775,22 @@ function buildFilterPanel(): void {
     if (filterMode) { applyFilterToDOM(); }
     refreshPanel();
   });
+  // 精选面板公司过滤
+  click('__fcpok__', () => {
+    const v = $<HTMLInputElement>('__fcpin__').value.trim();
+    if (v) {
+      const merged = [...blockCompanies, ...v.split(/[,，\s]+/).filter(Boolean).map(k => k.toLowerCase())];
+      blockCompanies = [...new Set(merged)];
+    }
+    $<HTMLInputElement>('__fcpin__').value = '';
+    saveSettings();
+    if (filterMode) { applyFilterToDOM(); }
+    refreshPanel();
+  });
+  // 最小化
+  click('__fmin__', toggleMinimize);
+  // 浮动按钮点击展开
+  $('_f_mbtn_').addEventListener('click', toggleMinimize);
   // 已隐藏列表展开/折叠
   click('__fhidrow__', () => {
     fHideListOpen = !fHideListOpen;
@@ -776,6 +806,20 @@ function buildFilterPanel(): void {
   });
 }
 
+function toggleMinimize(): void {
+  fMinimized = !fMinimized;
+  if (!fPnl) return;
+  if (fMinimized) {
+    fPnl.classList.add('_fmin');
+    const mbtn = document.getElementById('_f_mbtn_');
+    if (mbtn) { mbtn.style.display = 'block'; mbtn.textContent = '🔍 ' + filterHiddenCount; }
+  } else {
+    fPnl.classList.remove('_fmin');
+    const mbtn = document.getElementById('_f_mbtn_');
+    if (mbtn) mbtn.style.display = 'none';
+  }
+}
+
 function refreshFilterPanel(): void {
   if (!fPnl) return;
   setText('__fbadge__', filterMode ? 'ON' : 'OFF');
@@ -784,7 +828,16 @@ function refreshFilterPanel(): void {
   } else {
     $<HTMLElement>('__fbadge__').style.background = '#3a5545'; $<HTMLElement>('__fbadge__').style.color = '#a6e3a1';
   }
-  setText('__fkw__', blockKeywords.length > 0 ? blockKeywords.join(', ') : '无');
+  const allBlk = [...blockKeywords, ...blockCompanies.map(c => '🏢' + c)];
+  setText('__fkw__', allBlk.length > 0 ? allBlk.join(', ') : '无');
+  // 同步公司输入提示
+  if (blockCompanies.length > 0) {
+    const cpin = $<HTMLInputElement>('__fcpin__');
+    if (cpin) cpin.placeholder = '🏢: ' + blockCompanies.join(', ');
+  }
+  // 浮动按钮更新
+  const mbtn = document.getElementById('_f_mbtn_');
+  if (mbtn && fMinimized) mbtn.textContent = '🔍 ' + filterHiddenCount;
   // 已隐藏数量 + 箭头
   {
     const hs = $('__fhid__');
