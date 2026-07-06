@@ -52,6 +52,7 @@ const skippedTexts = new Set<string>();
 let filterMode = false;
 let filterObserver: MutationObserver | null = null;
 let filterStyleEl: HTMLStyleElement | null = null;
+let filterIObserver: IntersectionObserver | null = null;
 let filteredJobs: { title: string; company: string }[] = [];
 let fHideListOpen = false;
 
@@ -97,7 +98,7 @@ async function loadSettings(): Promise<void> {
     if (r.filterMode === true) {
       filterMode = true;
       showFilterPanel();
-      setTimeout(() => { applyFilterToDOM(); startFilterObserver(); startDetailObserver(); }, 1000);
+      setTimeout(() => { applyFilterToDOM(); startFilterObserver(); startFilterIObserver(); startDetailObserver(); }, 1000);
     }
     // 面板显隐
     if (r.panelVisible === false && pnl) {
@@ -164,9 +165,9 @@ chrome.runtime.onMessage.addListener((message: CommandMessage) => {
     chrome.storage.local.get('filterMode').then(r => {
       filterMode = r.filterMode === true;
       if (filterMode) {
-        showFilterPanel(); applyFilterToDOM(); startFilterObserver(); startDetailObserver();
+        showFilterPanel(); applyFilterToDOM(); startFilterObserver(); startFilterIObserver(); startDetailObserver();
       } else {
-        hideFilterPanel(); removeFilterFromDOM(); stopFilterObserver(); stopDetailObserver();
+        hideFilterPanel(); removeFilterFromDOM(); stopFilterObserver(); stopFilterIObserver(); stopDetailObserver();
       }
     });
   }
@@ -605,10 +606,10 @@ function startFilterObserver(): void {
     for (const m of mutations) {
       for (const node of m.addedNodes) {
         if (!(node instanceof HTMLElement)) continue;
-        if (node.classList.contains('card-area')) applyFilterToCard(node);
+        if (node.classList.contains('card-area')) observeNewCards(node);
         else {
           const cards = node.querySelectorAll?.('div.card-area');
-          cards?.forEach(c => applyFilterToCard(c as HTMLElement));
+          cards?.forEach(c => observeNewCards(c as HTMLElement));
         }
       }
     }
@@ -620,6 +621,30 @@ function startFilterObserver(): void {
 
 function stopFilterObserver(): void {
   if (filterObserver) { filterObserver.disconnect(); filterObserver = null; }
+}
+
+// IntersectionObserver —— 卡片进入视口自动重新过滤（解决虚拟列表 DOM 复用问题）
+function startFilterIObserver(): void {
+  if (filterIObserver) return;
+  filterIObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting && e.target instanceof HTMLElement && e.target.classList.contains('card-area')) {
+        applyFilterToCard(e.target);
+      }
+    }
+  }, { threshold: 0.1 });
+  // 观察所有现有卡片
+  document.querySelectorAll('div.card-area').forEach(c => filterIObserver!.observe(c));
+}
+
+function stopFilterIObserver(): void {
+  if (filterIObserver) { filterIObserver.disconnect(); filterIObserver = null; }
+}
+
+// MutationObserver 检测到新卡片时也注册到 IntersectionObserver
+function observeNewCards(card: HTMLElement): void {
+  applyFilterToCard(card);
+  if (filterIObserver) filterIObserver.observe(card);
 }
 
 // 详情面板 observer —— 点击职位后检测 p.desc 的工作制信息
