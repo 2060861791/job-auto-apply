@@ -52,6 +52,8 @@ const skippedTexts = new Set<string>();
 let filterMode = false;
 let filterObserver: MutationObserver | null = null;
 let filterStyleEl: HTMLStyleElement | null = null;
+let filteredJobs: { title: string; company: string }[] = [];
+let fHideListOpen = false;
 
 // 拖动
 let drag = false, dx = 0, dy = 0, px = 0, py = 0;
@@ -561,8 +563,15 @@ function applyFilterToDOM(): void {
   const cards = getJobCards();
   schedCounts = { 双休: 0, 大小周: 0, 单休: 0, 朝九晚五: 0, 朝九晚六: 0, 上班时间: 0, 工作时间: 0, 未匹配: 0 };
   filterHiddenCount = 0;
+  filteredJobs = [];
   for (const card of cards) {
-    if (matchesBlockKeywords(card)) { filterHiddenCount++; }
+    if (matchesBlockKeywords(card)) {
+      filterHiddenCount++;
+      filteredJobs.push({
+        title: txt(card, 'a.job-name').substring(0, 30),
+        company: txt(card, 'span.boss-name').substring(0, 15),
+      });
+    }
     applyFilterToCard(card);
     const title = txt(card, 'a.job-name');
     const s = scheduleCache.get(title) || getScheduleType(card);
@@ -664,6 +673,11 @@ const FILTER_CSS = `
 #_f_ ._fb{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #2a2a44;flex-shrink:0;}
 #_f_ ._fb button{flex:1;padding:6px 0;border:1px solid #3a3a55;border-radius:7px;background:#22223a;color:#cdd6f4;font-size:11px;cursor:pointer;}
 #_f_ ._fb button:hover{background:#2d2d48;}
+#_f_ ._fhlist{font-size:10px;line-height:1.6;color:#a6adc8;padding:4px 0;}
+#_f_ ._fhlist ._hi{padding:2px 0;border-bottom:1px solid #1e1e34;display:flex;justify-content:space-between;}
+#_f_ ._fhlist ._hi:last-child{border-bottom:none}
+#_f_ ._fhlist ._hit{color:#cdd6f4}
+#_f_ ._fhlist ._hic{color:#78789e}
 `;
 
 const FILTER_HTML = `
@@ -673,7 +687,8 @@ const FILTER_HTML = `
 </div>
 <div class="_fs" id="__fstats__">
   <div class="_fl"><span class="_fd">屏蔽词</span><span id="__fkw__">-</span></div>
-  <div class="_fl"><span class="_fd">已隐藏</span><span class="_flc" id="__fhid__" style="color:#f38ba8">0</span></div>
+  <div class="_fl" id="__fhidrow__" style="cursor:pointer"><span class="_fd">已隐藏</span><span class="_flc" id="__fhid__" style="color:#f38ba8">0  ▸</span></div>
+  <div class="_fhlist" id="__fhlist__" style="display:none;max-height:150px;overflow-y:auto;margin:4px 0"></div>
   <div class="_fl"><span class="_fd">🟢 双休</span><span class="_flc" style="color:#28a745" id="__fc_shuang__">0</span></div>
   <div class="_fl"><span class="_fd">🟡 大小周</span><span class="_flc" style="color:#ffc107" id="__fc_dxzhou__">0</span></div>
   <div class="_fl"><span class="_fd">🔴 单休</span><span class="_flc" style="color:#dc3545" id="__fc_danxiu__">0</span></div>
@@ -705,6 +720,19 @@ function buildFilterPanel(): void {
   });
 
   click('__fscan__', () => { scheduleCache.clear(); applyFilterToDOM(); });
+  // 已隐藏列表展开/折叠
+  click('__fhidrow__', () => {
+    fHideListOpen = !fHideListOpen;
+    const list = $('__fhlist__');
+    const hidSpan = $('__fhid__');
+    if (fHideListOpen) {
+      list.style.display = 'block';
+      hidSpan.textContent = filterHiddenCount + '  ▾';
+    } else {
+      list.style.display = 'none';
+      hidSpan.textContent = filterHiddenCount + '  ▸';
+    }
+  });
 }
 
 function refreshFilterPanel(): void {
@@ -716,7 +744,24 @@ function refreshFilterPanel(): void {
     $<HTMLElement>('__fbadge__').style.background = '#3a5545'; $<HTMLElement>('__fbadge__').style.color = '#a6e3a1';
   }
   setText('__fkw__', blockKeywords.length > 0 ? blockKeywords.join(', ') : '无');
-  setText('__fhid__', String(filterHiddenCount));
+  // 已隐藏数量 + 箭头
+  {
+    const hs = $('__fhid__');
+    if (hs) hs.textContent = filterHiddenCount + (fHideListOpen ? '  ▾' : '  ▸');
+  }
+  // 填充屏蔽列表
+  {
+    const hl = $('__fhlist__');
+    if (hl) {
+      if (filteredJobs.length > 0) {
+        hl.innerHTML = filteredJobs.map(j =>
+          `<div class="_hi"><span class="_hit">${esc(j.title)}</span><span class="_hic">${esc(j.company)}</span></div>`
+        ).join('');
+      } else {
+        hl.innerHTML = '<div class="_hi"><span class="_hic">无</span></div>';
+      }
+    }
+  }
   setText('__fc_shuang__', String(schedCounts['双休']));
   setText('__fc_dxzhou__', String(schedCounts['大小周']));
   setText('__fc_danxiu__', String(schedCounts['单休']));
