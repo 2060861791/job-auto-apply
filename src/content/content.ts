@@ -472,19 +472,20 @@ function isBlocked(card: HTMLElement): boolean {
 // 精选模式 —— DOM 过滤 + 工作制高亮 + 详情检测 + 独立面板
 // ============================================================
 
-type ScheduleType = '双休' | '大小周' | '单休' | '朝九晚五' | '朝九晚六' | '上班时间' | '工作时间';
+type ScheduleType = '双休' | '大小周' | '单休' | '朝九晚五' | '朝九晚六' | '上班时间' | '工作时间' | '薪资待遇' | '发薪' | '月休';
 // 详情 p.desc 关键词（优先级从高到低）
 const DETAIL_KW: [string, ScheduleType][] = [
   ['单休', '单休'], ['大小周', '大小周'], ['双休', '双休'],
   ['朝九晚五', '朝九晚五'], ['朝九晚六', '朝九晚六'],
   ['上班时间', '上班时间'], ['工作时间', '工作时间'],
+  ['薪资待遇', '薪资待遇'], ['发薪', '发薪'], ['月休', '月休'],
 ];
 // 已扫描的 schedule 缓存（title → ScheduleType）
 const scheduleCache = new Map<string, ScheduleType>();
 
 // 精选模式统计
 let filterHiddenCount = 0;
-let schedCounts: Record<ScheduleType | '未匹配', number> = { 双休: 0, 大小周: 0, 单休: 0, 朝九晚五: 0, 朝九晚六: 0, 上班时间: 0, 工作时间: 0, 未匹配: 0 };
+let schedCounts: Record<ScheduleType | '未匹配', number> = { 双休: 0, 大小周: 0, 单休: 0, 朝九晚五: 0, 朝九晚六: 0, 上班时间: 0, 工作时间: 0, 薪资待遇: 0, 发薪: 0, 月休: 0, 未匹配: 0 };
 
 // 详情面板 observer
 let detailObserver: MutationObserver | null = null;
@@ -504,6 +505,9 @@ function getScheduleType(card: HTMLElement): ScheduleType | null {
   if (text.includes('朝九晚六')) return '朝九晚六';
   if (text.includes('上班时间')) return '上班时间';
   if (text.includes('工作时间')) return '工作时间';
+  if (text.includes('薪资待遇')) return '薪资待遇';
+  if (text.includes('发薪')) return '发薪';
+  if (text.includes('月休')) return '月休';
   return null;
 }
 
@@ -523,7 +527,9 @@ function injectCardBadge(card: HTMLElement, sched: ScheduleType | '未匹配'): 
     双休: ['#28a745', '#d4edda'], 大小周: ['#ffc107', '#fff3cd'],
     单休: ['#dc3545', '#f8d7da'], 朝九晚五: ['#4a90d9', '#dbeafe'],
     朝九晚六: ['#4a90d9', '#dbeafe'], 上班时间: ['#f59e0b', '#fef3c7'],
-    工作时间: ['#f59e0b', '#fef3c7'], 未匹配: ['#9ca3af', '#f3f4f6'],
+    工作时间: ['#f59e0b', '#fef3c7'], 薪资待遇: ['#8b5cf6', '#ede9fe'],
+    发薪: ['#14b8a6', '#ccfbf1'], 月休: ['#ec4899', '#fce7f3'],
+    未匹配: ['#9ca3af', '#f3f4f6'],
   };
   const [border, bg] = colors[sched] || ['#9ca3af', '#f3f4f6'];
   Object.assign(badge.style, {
@@ -561,7 +567,7 @@ function applyFilterToCard(card: HTMLElement): void {
 
 function applyFilterToDOM(): void {
   const cards = getJobCards();
-  schedCounts = { 双休: 0, 大小周: 0, 单休: 0, 朝九晚五: 0, 朝九晚六: 0, 上班时间: 0, 工作时间: 0, 未匹配: 0 };
+  schedCounts = { 双休: 0, 大小周: 0, 单休: 0, 朝九晚五: 0, 朝九晚六: 0, 上班时间: 0, 工作时间: 0, 薪资待遇: 0, 发薪: 0, 月休: 0, 未匹配: 0 };
   filterHiddenCount = 0;
   filteredJobs = [];
   for (const card of cards) {
@@ -588,7 +594,8 @@ function removeFilterFromDOM(): void {
   });
   document.querySelectorAll('.__boss_sched__').forEach(c => c.remove());
   filterHiddenCount = 0;
-  schedCounts = { 双休: 0, 大小周: 0, 单休: 0, 朝九晚五: 0, 朝九晚六: 0, 上班时间: 0, 工作时间: 0, 未匹配: 0 };
+  filteredJobs = [];
+  schedCounts = { 双休: 0, 大小周: 0, 单休: 0, 朝九晚五: 0, 朝九晚六: 0, 上班时间: 0, 工作时间: 0, 薪资待遇: 0, 发薪: 0, 月休: 0, 未匹配: 0 };
   refreshFilterPanel();
 }
 
@@ -681,6 +688,11 @@ const FILTER_CSS = `
 #_f_ ._fhw{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;margin:4px 0;background:#2a1a2e;border:1px solid #5a3a5e;border-radius:7px;cursor:pointer;font-size:11px;font-weight:600;color:#f5c2e7;transition:all .2s;}
 #_f_ ._fhw:hover{background:#3a2a3e;border-color:#f38ba8;}
 #_f_ ._fhc{background:#f38ba8;color:#1a1a2e;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;}
+#_f_ ._fkwrow{display:flex;gap:4px;padding:2px 0;}
+#_f_ ._fkwrow input{flex:1;padding:4px 8px;border:1px solid #3a3a55;border-radius:5px;background:#22223a;color:#cdd6f4;font-size:10px;outline:none;}
+#_f_ ._fkwrow input:focus{border-color:#a6e3a1;}
+#_f_ ._fkwrow button{padding:4px 10px;border:1px solid #a6e3a1;border-radius:5px;background:#22223a;color:#a6e3a1;font-size:10px;cursor:pointer;white-space:nowrap;}
+#_f_ ._fkwrow button:hover{background:#2a3a2a;}
 `;
 
 const FILTER_HTML = `
@@ -690,13 +702,17 @@ const FILTER_HTML = `
 </div>
 <div class="_fs" id="__fstats__">
   <div class="_fl"><span class="_fd">屏蔽词</span><span id="__fkw__">-</span></div>
+  <div class="_fkwrow"><input type="text" id="__fkwin__" placeholder="+ 添加屏蔽词，逗号分隔"><button id="__fkwok__">确定</button></div>
   <div class="_fhw" id="__fhidrow__"><span>🚫 屏蔽列表</span><span class="_fhc" id="__fhid__">0  ▸</span></div>
   <div class="_fhlist" id="__fhlist__" style="display:none;max-height:160px;overflow-y:auto;margin:2px 0 6px 0"></div>
   <div class="_fl"><span class="_fd">🟢 双休</span><span class="_flc" style="color:#28a745" id="__fc_shuang__">0</span></div>
   <div class="_fl"><span class="_fd">🟡 大小周</span><span class="_flc" style="color:#ffc107" id="__fc_dxzhou__">0</span></div>
   <div class="_fl"><span class="_fd">🔴 单休</span><span class="_flc" style="color:#dc3545" id="__fc_danxiu__">0</span></div>
+  <div class="_fl"><span class="_fd">💗 月休</span><span class="_flc" style="color:#ec4899" id="__fc_yuexiu__">0</span></div>
   <div class="_fl"><span class="_fd">🔵 朝九晚五/六</span><span class="_flc" style="color:#4a90d9" id="__fc_9to5__">0</span></div>
   <div class="_fl"><span class="_fd">🟠 有工作时间</span><span class="_flc" style="color:#f59e0b" id="__fc_worktime__">0</span></div>
+  <div class="_fl"><span class="_fd">🟣 有薪资待遇</span><span class="_flc" style="color:#8b5cf6" id="__fc_xinzi__">0</span></div>
+  <div class="_fl"><span class="_fd">🩵 发薪日</span><span class="_flc" style="color:#14b8a6" id="__fc_faxin__">0</span></div>
   <div class="_fl"><span class="_fd">⬜ 未匹配</span><span class="_flc" style="color:#9ca3af" id="__fc_none__">0</span></div>
 </div>
 <div class="_fb">
@@ -723,6 +739,19 @@ function buildFilterPanel(): void {
   });
 
   click('__fscan__', () => { scheduleCache.clear(); applyFilterToDOM(); });
+  // 精选面板关键词同步
+  click('__fkwok__', () => {
+    const v = $<HTMLInputElement>('__fkwin__').value.trim();
+    if (v) {
+      const merged = [...blockKeywords, ...v.split(/[,，\s]+/).filter(Boolean).map(k => k.toLowerCase())];
+      blockKeywords = [...new Set(merged)];
+    }
+    $<HTMLInputElement>('__fkwin__').value = '';
+    $<HTMLInputElement>('__blkin__').value = blockKeywords.join(',');
+    saveSettings();
+    if (filterMode) { applyFilterToDOM(); }
+    refreshPanel();
+  });
   // 已隐藏列表展开/折叠
   click('__fhidrow__', () => {
     fHideListOpen = !fHideListOpen;
@@ -765,12 +794,15 @@ function refreshFilterPanel(): void {
       }
     }
   }
-  setText('__fc_shuang__', String(schedCounts['双休']));
-  setText('__fc_dxzhou__', String(schedCounts['大小周']));
-  setText('__fc_danxiu__', String(schedCounts['单休']));
+  setText('__fc_shuang__', String(schedCounts['双休'] || 0));
+  setText('__fc_dxzhou__', String(schedCounts['大小周'] || 0));
+  setText('__fc_danxiu__', String(schedCounts['单休'] || 0));
+  setText('__fc_yuexiu__', String(schedCounts['月休'] || 0));
   setText('__fc_9to5__', String((schedCounts['朝九晚五'] || 0) + (schedCounts['朝九晚六'] || 0)));
   setText('__fc_worktime__', String((schedCounts['上班时间'] || 0) + (schedCounts['工作时间'] || 0)));
-  setText('__fc_none__', String(schedCounts['未匹配']));
+  setText('__fc_xinzi__', String(schedCounts['薪资待遇'] || 0));
+  setText('__fc_faxin__', String(schedCounts['发薪'] || 0));
+  setText('__fc_none__', String(schedCounts['未匹配'] || 0));
 }
 
 function showFilterPanel(): void {
